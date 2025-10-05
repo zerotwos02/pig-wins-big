@@ -1,0 +1,58 @@
+// protos/game.proto
+syntax = "proto3";
+package pigwins.v1;
+
+enum Symbol {
+  SYM_UNKNOWN = 0;
+  SYM_PIG = 1;
+  SYM_PIG_GOLD = 2;
+  SYM_WILD = 3;
+  SYM_HAMMER = 4;
+  SYM_DIAMOND = 10;
+  SYM_GOLD_BARS = 11;
+  SYM_CASH = 12;
+  SYM_COIN = 13;
+}
+
+message SpinRequest { double stake = 1; uint64 client_seed = 2; }
+
+message Grid { repeated Symbol cells = 1; } // 49 items row-major
+
+message BaseWin {
+  Symbol symbol = 1;
+  int32 reels = 2;
+  int32 ways = 3;
+  double amount = 4;
+  repeated int32 indices = 5; // row-major cells
+}
+
+message FeatureEvent {
+  oneof ev {
+    LockPig lock_pig = 1;
+    WildBoost wild_boost = 2;
+    HammerSmash hammer_smash = 3;
+    SpinsReset spins_reset = 4;
+  }
+  message LockPig { int32 index = 1; double value = 2; }
+  message WildBoost { int32 wild_index = 1; repeated int32 pig_indices = 2; repeated double new_values = 3; int32 spins_added = 4; }
+  message HammerSmash { int32 from_index = 1; int32 to_index = 2; double absorbed_total = 3; }
+  message SpinsReset { int32 spins_remaining = 1; }
+}
+
+message PigFeature {
+  bool triggered = 1;
+  int32 pigs_total = 2;
+  repeated int32 pig_indices = 3;
+  repeated FeatureEvent events = 4;
+  bool full_board_double = 5;
+  double feature_win = 6;
+}
+
+message SpinResponse {
+  Grid grid = 1;
+  double base_win_total = 2;
+  repeated BaseWin base_wins = 3;
+  PigFeature feature = 10;
+  repeated int32 win_indices = 20;
+  double total_win = 30;
+}

@@ -1,0 +1,13 @@
+version: v1
+plugins:
+  - plugin: buf.build/bufbuild/es
+    out: src/gen
+    opt:
+      - target=ts
+      - import_extension=.ts
+  # remove this block if you didn't define a service in game.proto yet
+  - plugin: buf.build/bufbuild/connect-es
+    out: src/gen
+    opt:
+      - target=ts
+      - import_extension=.ts
