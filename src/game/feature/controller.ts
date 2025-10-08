@@ -2,27 +2,18 @@
 import { Container, Graphics, Text, Sprite } from 'pixi.js';
 import { GRID_COLS, GRID_ROWS, CELL } from '@/game/config';
 import { Reels, setFeatureMode, setSpinSpeedScale } from '@/game/reels/display-reels';
-import { animateHammerAction, shakeZoomHammerAndPig } from '@/game/feature/hammer/hammer-anim';
-
-import {
-  normKey,
-  isPigKey,
-  isGoldPigKey,
-  findHammerCells,
-} from '@/game/feature/helpers';
-import { stepHammers, HammerStates } from '@/game/feature/hammer/hammer';
+import { normKey, isPigKey, isGoldPigKey } from '@/game/feature/helpers';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // pacing
 const RESPIN_START    = 3;
-const SPIN_TIME_MS    = 520;
+const MIN_SPIN_MS     = 520;   // minimum time before we allow STOP to take effect
 const SLOW_SPIN_SCALE = 0.6;
 
 const fmt = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 const rc  = (i: number) => ({ r: Math.floor(i / GRID_COLS), c: i % GRID_COLS });
 
-/** Credit roll for pigs (heavy-tailed). */
 function rollPigAmount(gold: boolean): number {
   const r = Math.random();
   if (!gold) {
@@ -36,7 +27,6 @@ function rollPigAmount(gold: boolean): number {
   }
 }
 
-/** Locked pig overlay */
 type Overlay = Container & { plate: Graphics; border: Graphics; icon: Sprite; txt: Text };
 
 function makeOverlay(x: number, y: number, cell: number, symKey: string, amount: number): Overlay {
@@ -44,7 +34,7 @@ function makeOverlay(x: number, y: number, cell: number, symKey: string, amount:
 
   const plate = new Graphics()
     .roundRect(0, 0, cell, cell, 12)
-    .fill({ color: 0x0d0d0d, alpha: 0.92 });
+    .fill({ color: 0x000000, alpha: 1 });
   plate.pivot.set(cell / 2, cell / 2);
 
   const border = new Graphics()
@@ -68,6 +58,7 @@ function makeOverlay(x: number, y: number, cell: number, symKey: string, amount:
 
   root.position.set(x, y);
   root.alpha = 0;
+  root.zIndex = 950;
 
   // tiny pop-in
   const t0 = performance.now(), dur = 140;
@@ -83,39 +74,83 @@ function makeOverlay(x: number, y: number, cell: number, symKey: string, amount:
   return root;
 }
 
+/** Activation: at least one pig symbol appears in each column. */
+function hasPigInEveryColumn(grid: string[]): boolean {
+  const colsWithPig = new Set<number>();
+  for (let i = 0; i < grid.length; i++) {
+    if (isPigKey(grid[i])) colsWithPig.add(i % GRID_COLS);
+  }
+  return colsWithPig.size === GRID_COLS;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Spin/Stop UI state machine
+// ─────────────────────────────────────────────────────────────────────────────
+export type SpinState = 'Idle' | 'Spinning' | 'Stopping';
+
+function emitSpinState(target: EventTarget, state: SpinState) {
+  target.dispatchEvent(new CustomEvent<SpinState>('spinstate', { detail: state }));
+}
+
 export class PigFeatureController extends Container {
   private overlays = new Map<number, Overlay>(); // index -> overlay
   private counterPlate = new Graphics();
   private counterTxt   = new Text({ text: 'Respins: 3', style: { fontSize: 20, fontWeight: '900', fill: 0xfff275 } as any });
 
+  // UI state + events
+  private _spinState: SpinState = 'Idle';
+  readonly uiEvents = new EventTarget();
+  private stopRequested = false;
+
   constructor(private reels: Reels) {
     super();
+    this.sortableChildren = true;
+    this.zIndex = 900;
   }
 
-  /**
-   * Hold & Win:
-   * - Lock pigs with rolled credits (overlays)
-   * - Each respin: lock new pigs; resolve hammer step (move/smash)
-   * - Reset respins to 3 when any NEW pig lands
-   * - Exit: pay sum(remaining pigs + hammer totals); return highlight indices
-   */
+  /** Subscribe UI (SpinButton) to state changes. Returns unsubscribe fn. */
+  onStateChange(cb: (s: SpinState) => void) {
+    const h = (e: Event) => cb((e as CustomEvent<SpinState>).detail);
+    this.uiEvents.addEventListener('spinstate', h);
+    queueMicrotask(() => cb(this._spinState)); // push current immediately
+    return () => this.uiEvents.removeEventListener('spinstate', h);
+  }
+
+  /** Called by the Spin button to request an early stop. */
+  requestStop() {
+    this.stopRequested = true;
+    if (this._spinState === 'Spinning') this.setSpinState('Stopping');
+  }
+
+  private setSpinState(s: SpinState) {
+    if (this._spinState === s) return;
+    this._spinState = s;
+    emitSpinState(this.uiEvents, s);
+  }
+
   async run(startGrid: string[], _stake: number): Promise<{ total: number; highlight: number[] }> {
+    // activation gate
+    if (!hasPigInEveryColumn(startGrid)) {
+      return { total: 0, highlight: [] };
+    }
+
     // counter UI
     const cx = (GRID_COLS * CELL) / 2;
     const cy = 12;
     this.counterPlate
       .roundRect(0, 0, 160, 28, 8)
-      .fill({ color: 0x000000, alpha: 0.55 })
-      .stroke({ width: 2, color: 0xffffff, alpha: 0.18 });
+      .fill({ color: 0x000000, alpha: 1 })
+      .stroke({ width: 2, color: 0xffbf00, alpha: 0.9 });
     this.counterPlate.pivot.set(80, 14);
     (this.counterTxt as any).anchor?.set?.(0.5);
 
     const counter = new Container();
     counter.addChild(this.counterPlate, this.counterTxt);
     counter.position.set(cx, cy);
+    counter.zIndex = 980;
     this.addChild(counter);
 
-    // entry lock
+    // initial lock
     const locked = new Map<number, { amount: number; sym: string }>();
     for (let i = 0; i < startGrid.length; i++) {
       const key = startGrid[i];
@@ -133,26 +168,36 @@ export class PigFeatureController extends Container {
       this.overlays.set(i, ov);
     }
 
-    // feature reel behavior
+    // feature behavior
     setFeatureMode(true);
     setSpinSpeedScale(SLOW_SPIN_SCALE);
 
     let respins = RESPIN_START;
-    let hammerStates: HammerStates = new Map();
 
     try {
       while (respins > 0) {
         this.counterTxt.text = `Respins: ${respins}`;
+        this.stopRequested = false;
 
-        // spin → stop
+        // ── SPINNING
+        this.setSpinState('Spinning');
         this.reels.start();
-        await sleep(SPIN_TIME_MS);
+
+        // wait until min time passes OR user requested stop
+        const t0 = performance.now();
+        while (performance.now() - t0 < MIN_SPIN_MS && !this.stopRequested) {
+          await sleep(16);
+        }
+
+        // ── STOPPING
+        this.setSpinState('Stopping');
         this.reels.requestStaggerStop(false);
         await this.reels.onceAllStopped();
+        this.setSpinState('Idle');
 
         const vis = this.reels.getVisibleGrid();
 
-        // lock new pigs
+        // lock NEW pigs
         let newPig = false;
         for (let i = 0; i < vis.length; i++) {
           if (locked.has(i)) continue;
@@ -172,62 +217,6 @@ export class PigFeatureController extends Container {
           }
         }
 
-        // hammer resolution
-        const hammerIndices = findHammerCells(vis);
-        if (hammerIndices.length > 0) {
-          // --- HAMMER RESOLUTION + ANIMATIONS ---
-          const step = stepHammers(hammerIndices, hammerStates, locked);
-          const movedPairs = [...step.moved.entries()]; // [fromIdx, toIdx]
-          hammerStates = step.hammerStates;
-
-          // animate each hammer move (optional pre-hit shake/zoom when smashing)
-          for (const [fromIdx, toIdx] of movedPairs) {
-            const smash = step.smashed.find(s => s.at === toIdx);
-
-            if (smash) {
-              // Avoid pre-hit temp sprites on bottom row (can clip off-screen)
-              const { r } = rc(toIdx);
-              const isBottomRow = r === GRID_ROWS - 1;
-              if (!isBottomRow) {
-                await shakeZoomHammerAndPig({
-                  fxLayer: this,
-                  hammerIdx: fromIdx,
-                  pigIdx: smash.at,
-                  ms: 200,
-                  shakePx: 5,
-                  zoomOut: 0.92,
-                });
-              }
-            }
-
-            // ⬇️ Center-of-window celebration (regardless of pig position)
-            await animateHammerAction({
-              fxLayer: this,
-              fromIdx,
-              toIdx,
-              smashed: smash,
-              newTotalUnderHammer: hammerStates.get(toIdx)?.total,
-
-              // force celebration at the true window center
-              centerOnWindow: true,
-              // Use the root container that spans the window; if PigFeatureController is
-              // attached directly under the main scene, this.parent is usually correct.
-              viewportForCenter: (this.parent as Container) ?? undefined,
-            });
-          }
-
-          // remove smashed pig overlays (locked already updated by stepHammers)
-          for (const s of step.smashed) {
-            const ov = this.overlays.get(s.at);
-            if (ov) {
-              this.overlays.delete(s.at);
-              ov.removeFromParent();
-              ov.destroy({ children: true });
-            }
-          }
-          // --- END HAMMER RESOLUTION + ANIMATIONS ---
-        }
-
         // respin bookkeeping
         respins -= 1;
         if (newPig) respins = RESPIN_START;
@@ -235,29 +224,21 @@ export class PigFeatureController extends Container {
         await sleep(120);
       }
     } finally {
-      // ALWAYS restore normal reels (prevents getting stuck in feature)
       this.reels.stopImmediate();
       setFeatureMode(false);
       setSpinSpeedScale(1);
+      this.setSpinState('Idle');
     }
 
-    // payout: remaining pigs + hammer totals
+    // payout
     let total = 0;
     const highlight: number[] = [];
-
     for (const [i, v] of locked) {
       total += v.amount;
       highlight.push(i);
     }
-    for (const [i, st] of hammerStates) {
-      if (st.total > 0) {
-        total += st.total;
-        highlight.push(i);
-      }
-    }
 
     await this.fadeOut();
-
     this.removeChildren();
     this.overlays.clear();
 

@@ -1,8 +1,22 @@
+// src/audio/sound-manager.ts
 import { sound } from '@pixi/sound';
 
 export type SoundKey =
-  | 'ui_click' | 'info_loop' | 'spin_start' | 'reel_tick' | 'reel_stop'
-  | 'win_small' | 'win_big' | 'lock_on' | 'bg_music';
+  | 'ui_click'
+  | 'info_loop'
+  | 'spin_start'
+  | 'reel_tick'
+  | 'reel_stop'
+  | 'win_small'
+  | 'win_big'
+  | 'lock_on'
+  | 'bg_music'
+  // --- Hammer feature SFX ---
+  | 'hammer_draw'   // small pull-back cue
+  | 'hammer_whoosh' // fast lunge
+  | 'hammer_hit'    // impact
+  | 'spark_burst'   // pink particle pop / explosion
+  | 'win_tick';     // token pop or count-up tick
 
 class SoundManager {
   private _enabled = true;
@@ -10,7 +24,7 @@ class SoundManager {
   private unlocked = false;
   private readonly prefKey = 'audio_enabled';
   private _readyResolve?: () => void;
-  readonly ready: Promise<void> = new Promise<void>((res) => (this._readyResolve = res)); 
+  readonly ready: Promise<void> = new Promise<void>((res) => (this._readyResolve = res));
 
   // tiny pub/sub + EventTarget
   private _listeners = new Set<() => void>();
@@ -29,11 +43,18 @@ class SoundManager {
     this.enabled = this._enabled;
     this.volume = defaultVolume;
   }
-   // optional: quick check
+
+  // quick check: is alias present in the pixi-sound registry?
   has(alias: SoundKey) {
-  const lib: any = sound as any;
-  return !!(lib.find?.(alias) || lib._sounds?.[alias]);
+    const lib: any = sound as any;
+    try {
+      // find() exists in pixi-sound v5; _sounds used in older versions
+      return Boolean(lib.find?.(alias) || lib._sounds?.[alias]);
+    } catch {
+      return false;
+    }
   }
+
   // Autoplay workaround: resume after first gesture
   unlockOnFirstInteraction = () => {
     if (this.unlocked) return;
@@ -57,14 +78,17 @@ class SoundManager {
   }
 
   get volume() { return this._volume; }
-  set volume(v: number) { this._volume = Math.max(0, Math.min(1, v)); (sound as any).volumeAll = this._volume; }
+  set volume(v: number) {
+    this._volume = Math.max(0, Math.min(1, v));
+    (sound as any).volumeAll = this._volume;
+  }
 
   // Add & preload using explicit URLs; resolve via 'loaded' callback
   private add(alias: string, urls: string[] | string, opt?: { loop?: boolean; volume?: number }) {
     return new Promise<void>((resolve, reject) => {
       try {
         (sound as any).add(alias, {
-          url: urls,        // ✅ string or string[]
+          url: urls,
           preload: true,
           ...(opt ?? {}),
           loaded: (err: Error | null) => err ? reject(err) : resolve(),
@@ -75,28 +99,36 @@ class SoundManager {
     });
   }
 
-  // IMPORTANT: use the formats you actually have. If you only have .mp3, pass just the mp3 string.
- // in load()
-async load() {
-  await Promise.all([
-    this.add('ui_click',   '/assets/audio/sfx/ui_click.mp3'),
-    // this.add('ui_hover',   '/assets/audio/sfx/ui_hover.mp3'),
-    this.add('spin_start', '/assets/audio/sfx/spin_start.mp3'),
-    this.add('info_loop', 'assets/audio/sfx/info_loop.mp3'),
-    // this.add('reel_tick',  '/assets/audio/sfx/reel_tick.mp3'),
-    this.add('reel_stop',  '/assets/audio/sfx/reel_stop.mp3'),
-    this.add('win_small',  '/assets/audio/sfx/win_small.mp3'),
-    this.add('win_big',    '/assets/audio/sfx/win_big.mp3'),
-    // this.add('lock_on',    '/assets/audio/sfx/lock_on.mp3'),
-    this.add('bg_music',   '/assets/audio/music/bg_loop.mp3', { loop: true, volume: 0.25 }),
-  ]);
-  this._readyResolve?.(); // <-- mark ready
-}
+  // IMPORTANT: use the formats you actually have
+  async load() {
+    await Promise.all([
+      this.add('ui_click',    '/assets/audio/sfx/ui_click.mp3'),
+      this.add('spin_start',  '/assets/audio/sfx/spin_start.mp3'),
+      this.add('info_loop',   '/assets/audio/sfx/info_loop.mp3'),
+      // this.add('reel_tick', '/assets/audio/sfx/reel_tick.mp3'),
+      this.add('reel_stop',   '/assets/audio/sfx/reel_stop.mp3'),
+      this.add('win_small',   '/assets/audio/sfx/win_small.mp3'),
+      this.add('win_big',     '/assets/audio/sfx/win_big.mp3'),
+      // this.add('lock_on',   '/assets/audio/sfx/lock_on.mp3'),
+      this.add('bg_music',    '/assets/audio/music/bg_loop.mp3', { loop: true, volume: 0.25 }),
+
+      // --- Hammer feature SFX (add the files you actually have) ---
+      //this.add('hammer_draw',   '/assets/audio/sfx/hammer_draw.mp3'),
+      this.add('hammer_whoosh', '/assets/audio/sfx/hammer_whoosh.mp3'),
+      this.add('hammer_hit',    '/assets/audio/sfx/hammer_hit.mp3'),
+      this.add('spark_burst',   '/assets/audio/sfx/spark_burst.mp3'),
+      //this.add('win_tick',      '/assets/audio/sfx/win_tick.mp3'),
+    ]);
+
+    this._readyResolve?.(); // mark ready once all are loaded
+  }
+
   play(key: SoundKey, opts?: { volume?: number; speed?: number }) {
-  if (!this._enabled) return;
-  if (!this.has(key)) { console.warn('[SFX] alias not loaded:', key); return; }
-  return (sound as any).play(key, { volume: opts?.volume ?? 1, speed: opts?.speed ?? 1 });
-}
+    if (!this._enabled) return;
+    if (!this.has(key)) { console.warn('[SFX] alias not loaded:', key); return; }
+    return (sound as any).play(key, { volume: opts?.volume ?? 1, speed: opts?.speed ?? 1 });
+  }
+
   stop(key: SoundKey) { (sound as any).stop(key); }
 
   toggle() { this.enabled = !this.enabled; }
@@ -117,8 +149,3 @@ async load() {
 
 export const SFX = new SoundManager();
 
-/*
-Place your files under:
-public/assets/audio/sfx/*.mp3(.ogg)
-public/assets/audio/music/*.mp3(.ogg)
-*/

@@ -2,12 +2,16 @@
 import { Container, Graphics, Sprite, Texture } from 'pixi.js';
 import { GRID_COLS, GRID_ROWS, CELL } from '@/game/config';
 import type { Cell, SpinOutcomeCell } from '@/game/config';
-import { SFX } from '@/audio/sound-manager'; // 🔊 add
+import { SFX } from '@/audio/sound-manager'; // 🔊
 
 // --- cell geometry ---
 const COL_W = CELL;
 const ROW_H = CELL;
-const PAD   = Math.round(CELL * 0.08);
+// ↓ Reduce padding so symbols can grow a bit inside the cell
+const PAD   = Math.round(CELL * 0.05);
+
+// Allow slight overshoot without clipping the mask
+const MASK_PAD = Math.round(CELL * 0.06);
 
 // --- window & buffer ---
 const VISIBLE = GRID_ROWS;
@@ -44,8 +48,24 @@ const WEIGHTS_FEATURE: Record<string, number> = {
   pig_gold: 0, // keep gold practically impossible during feature
   banker: 10,
   A: 20, K: 20, Q: 20, J: 20, '10': 20,
-};                       
+};
 // pigs share ≈ 3 / 127 = 2.36%
+
+// --- size multipliers to match your mockup (bigger pigs/diamonds/$$$) ---
+const SIZE_MULT: Record<string, number> = {
+  pig: 1.70,
+  pig_gold: 1.70,
+  diamond: 1.40,
+  gold_bars: 1.09,
+  cash_stack: 1.09,
+  dollar: 1.70,     // orange $ coin
+  coin: 1.09,       // tiny bump; set to 1.00 if not needed
+  banker: 1.09,     // green banker portrait
+  hammer: 1.40,
+  wild_feather: 1.00,
+  A: 1.09, K: 1.09, Q: 1.09, J: 1.09, '10': 1.09,
+  default: 1.09,
+};
 
 function weightedPick(weights: Record<string, number>): string {
   let sum = 0;
@@ -66,10 +86,27 @@ function randKey() {
 // store & read logical key on each sprite (so we can copy keys cleanly)
 function setSpriteKey(sp: Sprite, key: string) {
   (sp as any).$key = key;
-  sp.texture = Texture.from(key);
-  const size = Math.min(COL_W, ROW_H) - PAD * 2;
-  sp.width = size; sp.height = size; sp.anchor.set(0.5);
+  const tex = Texture.from(key);
+  sp.texture = tex;
+
+  // Always center for clean animation
+  sp.anchor.set(0.5);
+
+  // Fit by SCALE only (do NOT set width/height)
+  const SAFE_SIZE = Math.min(COL_W, ROW_H) - PAD * 2;
+  const origW = (tex as any).orig?.width ?? tex.width ?? SAFE_SIZE;
+  const origH = (tex as any).orig?.height ?? tex.height ?? SAFE_SIZE;
+
+  // Contain-fit inside the safe box
+  const baseFit = SAFE_SIZE / Math.max(origW, origH);
+
+  // Per-symbol bump
+  const mult = (SIZE_MULT as any)[key] ?? SIZE_MULT.default;
+
+  // Final scale
+  sp.scale.set(baseFit * mult);
 }
+
 function getSpriteKey(sp: Sprite): string {
   return (sp as any).$key ?? '';
 }
@@ -97,8 +134,9 @@ export class Reels {
   private stopResolve: StopResolve = null;
 
   constructor() {
+    // Expand mask to avoid clipping when multipliers > 1.0
     this.maskShape.clear()
-      .rect(0, 0, GRID_COLS * COL_W, GRID_ROWS * ROW_H)
+      .rect(-MASK_PAD, -MASK_PAD, GRID_COLS * COL_W + MASK_PAD * 2, GRID_ROWS * ROW_H + MASK_PAD * 2)
       .fill(0xffffff);
     this.stripRoot.mask = this.maskShape;
 
@@ -253,6 +291,13 @@ export class Reels {
       }
     }
     return out;
+  }
+  /** Temporarily change alpha of the visible symbol at a flat index (0..GRID_COLS*GRID_ROWS-1). */
+  public setCellAlpha(index: number, a: number) {
+    const r = Math.floor(index / GRID_COLS);
+    const c = index % GRID_COLS;
+    const sp = this.spCols?.[c]?.[1 + r];
+    if (sp) sp.alpha = a;
   }
 
   highlightCells(indices: number[]) {

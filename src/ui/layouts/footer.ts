@@ -1,6 +1,6 @@
 // src/ui/layouts/Footer.ts
 // Requires: npm i @pixi/filter-drop-shadow @pixi/filter-glow
-import { Container, NineSliceSprite, Texture, Graphics, Text } from 'pixi.js';
+import { Container, NineSliceSprite, Texture, Graphics, Text, Ticker } from 'pixi.js';
 import { DropShadowFilter } from '@pixi/filter-drop-shadow';
 import { GlowFilter } from '@pixi/filter-glow';
 import { getState, subscribe, stepStake } from '@/state/store';
@@ -15,7 +15,10 @@ const PURPLE_DARK = 0x2C004A;
 
 // format helpers
 const fmtFUN = (n: number, d = 2) =>
-  'FUN' + n.toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d });
+  'FUN' + Number(n || 0).toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+// simple easing so the count-up feels nice
+const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
 
 export class Footer extends Container {
   private bg: NineSliceSprite;
@@ -33,6 +36,18 @@ export class Footer extends Container {
   private lastW = 0;
   private lastH = 0;
 
+  // ── Win animation state ─────────────────────────────────────────────────────
+  private winShown = 0; // what’s currently displayed
+  private winAnim?: {
+    from: number;
+    to: number;
+    durMs: number;
+    tMs: number;
+    stakeAtStart: number;
+    lastDingStep: number; // last k for which we played a ding (k*stake)
+    onTick: (ticker: Ticker) => void;
+  };
+
   constructor() {
     super();
 
@@ -49,6 +64,7 @@ export class Footer extends Container {
 
   destroy(options?: any) {
     this.unsub?.();
+    this.stopWinAnim();
     super.destroy(options);
   }
 
@@ -164,10 +180,80 @@ export class Footer extends Container {
 
   private syncFromState() {
     const s = getState();
-    this.stakeText.text   = `FUN${s.stake.toLocaleString('fr-FR')}`; // e.g. FUN100
-    this.winText.text     = fmtFUN(s.win);                             // e.g. FUN320,00
-    this.balanceText.text = fmtFUN(s.balance);                         // e.g. FUN17 240,00
+
+    // stake/balance update
+    this.stakeText.text   = `FUN${s.stake.toLocaleString('fr-FR')}`;
+    this.balanceText.text = fmtFUN(s.balance);
+
+    // win update — animate upwards; otherwise set immediately
+    if (s.win > this.winShown) {
+      this.startWinAnim(this.winShown, s.win, s.stake);
+    } else if (s.win !== this.winShown) {
+      // going down or equal: cancel any anim and snap
+      this.stopWinAnim();
+      this.winShown = s.win;
+      this.winText.text = fmtFUN(this.winShown);
+    }
+
     if (this.lastW) this.layout(this.lastW, this.lastH); // reflow widths
+  }
+
+  // ── Win count-up animation ──────────────────────────────────────────────────
+  private startWinAnim(from: number, to: number, stake: number) {
+    this.stopWinAnim();
+
+    const delta = Math.max(0, to - from);
+    // duration ≈ 0.3s per stake multiple; clamp 0.3s..6s for UX
+    const multiples = stake > 0 ? (delta / stake) : 0;
+    const durSec = Math.min(6, Math.max(0.3, 0.3 * (multiples || (delta > 0 ? 1 : 0))));
+    const durMs = durSec * 1000;
+
+    const ticker = Ticker.shared;
+       
+    const onTick = (tk: Ticker) => {
+      const deltaMs = tk.deltaMS;           
+      if (!this.winAnim) return;
+      this.winAnim.tMs += deltaMs;
+
+      const t = Math.min(1, this.winAnim.tMs / this.winAnim.durMs);
+      const eased = easeOutCubic(t);
+      const val = this.winAnim.from + (this.winAnim.to - this.winAnim.from) * eased;
+
+      this.winShown = val;
+      this.winText.text = fmtFUN(val);
+
+      if (this.winAnim.stakeAtStart > 0 && this.winAnim.to > this.winAnim.from) {
+        const kNow = Math.floor(val / this.winAnim.stakeAtStart);
+        if (kNow > this.winAnim.lastDingStep) {
+          this.winAnim.lastDingStep = kNow;
+          SFX.play('win_small');
+        }
+      }
+
+      if (t >= 1) {
+        this.winShown = this.winAnim.to;
+        this.winText.text = fmtFUN(this.winShown);
+        this.stopWinAnim();
+      }
+    };
+
+    this.winAnim = {
+      from, to, durMs, tMs: 0,
+      stakeAtStart: Math.max(0, stake),
+      lastDingStep: Math.floor(Math.max(0, from) / Math.max(1, stake)),
+      onTick,
+    };
+
+    // kick off
+    this.winText.text = fmtFUN(from);
+    Ticker.shared.add(onTick);
+  }
+
+  private stopWinAnim() {
+    if (this.winAnim) {
+      Ticker.shared.remove(this.winAnim.onTick);
+      this.winAnim = undefined;
+    }
   }
 
   /**

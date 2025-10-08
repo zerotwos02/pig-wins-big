@@ -24,6 +24,7 @@ export async function loadBoot() {
 
     // UI
     spin_btn:    '/assets/images/spin_btn.png',
+     spin_btn_red:    '/assets/images/spin_btn_red.png',
     title_pigwins: '/assets/images/title_pigwins.png',
     panel:       '/assets/images/panel.png',
     footer_band: '/assets/images/footer_band.png',

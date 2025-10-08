@@ -1,5 +1,5 @@
 // src/scenes/game-scene.ts
-import { Container, Sprite, Texture, NineSliceSprite, Ticker, Graphics, Point } from 'pixi.js';
+import { Container, Sprite, Texture, NineSliceSprite, Ticker, Graphics } from 'pixi.js';
 
 import { App } from '@/core/app';
 import { GRID_COLS, GRID_ROWS, CELL, ENABLE_HAMMER_BASE, PIG_TRIGGER_COUNT } from '@/game/config';
@@ -13,13 +13,21 @@ import { getState, setSpinning, debitStake, setWin, setBalance } from '@/state/s
 
 import { Reels } from '@/game/reels/display-reels';
 import { evaluateWays } from '@/game/eval/ways';
-import { impactRingAt, popAmountAt, shakeZoomHammerAndPig } from '@/game/feature/hammer/hammer-anim';
+import { animateHammerAction, pinkBurstAtCell, showValueTokenAtCell } from '@/game/feature/hammer/hammer-anim';
 import { findPigCells, findHammerCells, neighborsOf } from '@/game/feature/helpers';
 import { PigFeatureController } from '@/game/feature/controller';
 import { WinToast } from '@/ui/layouts/WinToast';
 
 import { SFX } from '@/audio/sound-manager';
 import { AudioToggle } from '@/ui/components/audio-toggle';
+import { FeatureIntroModal } from '@/ui/components/FeatureIntro';
+// NEW: completed modal
+import { FeatureCompleteModal } from '@/ui/components/FeatureComplete';
+
+// ──────────────────────────────────────────────────────────────────────────────
+// DEV: URL flag to force Lock&Win (add ?forceLW to the URL)
+const DEV_FORCE_LW = new URLSearchParams(location.search).has('forceLW');
+// ──────────────────────────────────────────────────────────────────────────────
 
 const AUTO_STOP_MS = 1100;
 const HIGHLIGHT_MS = 900;
@@ -29,7 +37,7 @@ export class gameScene extends Container {
   private panel!: NineSliceSprite;
   private grid = new Container();
 
-  // ⬇️ NEW: mask to clip reels + FX inside the panel area
+  // Clips reels + FX to the panel’s inner window
   private gridMask = new Graphics();
 
   private _bgStarted = false;
@@ -49,20 +57,38 @@ export class gameScene extends Container {
   private autoStopTimer: number | undefined;
   private pendingSpin?: Promise<{ grid: string[]; win?: number }>;
 
+  // DEV: press L to force Lock&Win on next settle
+  private _forceLWOnce = false;
+  // DEV: press H to force a single hammer smash on next settle (base game)
+  private _forceHammerOnce = false;
+
   private handleKeyDown = (e: KeyboardEvent) => {
-    if (e.code === 'Space' || e.key === ' ') {
+    // Space/Enter are now handled by SpinButton.attachKeyboard()
+    if (e.code === 'KeyL') {
       e.preventDefault();
-      this.toggleSpin();
+      this._forceLWOnce = true;
+      console.log('[DEV] Lock&Win will trigger on next settle');
+      if (!this.reels.isRolling) this.startSpin();
+      return;
+    }
+    if (e.code === 'KeyH') {
+      e.preventDefault();
+      this._forceHammerOnce = true;
+      console.log('[DEV] Hammer test will trigger on next settle');
+      if (!this.reels.isRolling) this.startSpin();
+      return;
     }
   };
 
   async init() {
     this.sortableChildren = true;
 
+    // Background
     this.bg = Sprite.from('bg');
     this.bg.anchor.set(0.5);
     this.addChild(this.bg);
 
+    // Panel frame
     this.panel = new NineSliceSprite({
       texture: Texture.from('panel'),
       leftWidth: 60,
@@ -74,30 +100,43 @@ export class gameScene extends Container {
     this.panel.anchor.set(0.5);
     this.addChild(this.panel);
 
+    // Reels inside grid container (we will sort children here)
+    this.grid.sortableChildren = true;      // allow zIndex inside grid
     this.grid.addChild(this.reels.view);
+    this.reels.view.zIndex = 0;             // reels at the bottom
     this.addChild(this.grid);
 
-    // ⬇️ NEW: add and assign mask so reels + FX are clipped to the panel window
+    // Mask that matches the panel’s inner window (drawn in layout())
     this.addChild(this.gridMask);
     this.grid.mask = this.gridMask;
 
+    // HUD
     this.addChild(this.hud);
-
     try {
-      // @ts-ignore optional
+      // @ts-ignore optional fun bounce
       this.hud.title?.startBounceLoop?.({ speed: 0.7, ampY: 6, ampScale: 0.045 });
     } catch {}
 
-    this.hud.spin.onClick(async () => {
+    // Spin button wiring (uses Spin/Stop/Disabled modes)
+    this.hud.spin.attachKeyboard();
+    this.hud.spin.onSpin = async () => {
       await SFX.ready;
       if (!this._bgStarted) {
         SFX.play('bg_music');
         this._bgStarted = true;
       }
       SFX.play('ui_click');
-      this.toggleSpin();
-    });
+      if (!this.reels.isRolling) this.startSpin();
+    };
+    this.hud.spin.onStop = () => {
+      // User pressed STOP while spinning: disable button and stagger stop
+      this.hud.spin.setMode('disabled');
+      this.disarmAutoStop();
+      this.reels.requestStaggerStop(false);
+      this.awaitAndSettle();
+    };
 
+    // Audio toggle + Info UI
     this.audioToggle = new AudioToggle();
     this.audioToggle.zIndex = 998;
     this.addChild(this.audioToggle);
@@ -112,11 +151,13 @@ export class gameScene extends Container {
       this.infoModal.layout(App.pixi.renderer.screen.width, App.pixi.renderer.screen.height);
     });
 
+    // Full-scene flash overlay
     this.fxFlash = new Graphics();
     this.fxFlash.zIndex = 1500;
     this.fxFlash.visible = false;
     this.addChild(this.fxFlash);
 
+    // Start BGM on first pointer
     const startBgOnce = async () => {
       await SFX.ready;
       if (!this._bgStarted) {
@@ -126,8 +167,8 @@ export class gameScene extends Container {
     };
     window.addEventListener('pointerdown', startBgOnce, { once: true });
 
+    // Ticker + input
     App.pixi.ticker.add(this.onTick, this);
-
     window.addEventListener('keydown', this.handleKeyDown);
     addEventListener('resize', () => this.layout());
 
@@ -142,12 +183,14 @@ export class gameScene extends Container {
     const W = App.pixi.renderer.screen.width;
     const H = App.pixi.renderer.screen.height;
 
+    // Background scale/pos (cover)
     const bw = this.bg.texture.width;
     const bh = this.bg.texture.height;
     const s = Math.max(W / bw, H / bh);
     this.bg.scale.set(s);
     this.bg.position.set(W / 2, H / 2);
 
+    // Reels placement & panel sizing
     const gridW = GRID_COLS * CELL;
     const gridH = GRID_ROWS * CELL;
     const target = Math.min(W, H) * 0.8;
@@ -160,16 +203,16 @@ export class gameScene extends Container {
     this.panel.height = gridH * k + 60;
     this.panel.position.set(W / 2, H * 0.45);
 
-    // HUD knows the reel rect
+    // HUD reel rect
     this.hud.setReelsRect({
       x: this.grid.x,
       y: this.grid.y,
       width: gridW * k,
       height: gridH * k,
     });
-
     this.hud.layout(W, H);
 
+    // Info & audio positions
     const r = 18, PAD = 16;
     this.infoBtn.position.set(W - PAD - r, PAD + r);
 
@@ -179,30 +222,23 @@ export class gameScene extends Container {
       this.audioToggle.y = PAD;
     }
 
+    // Flash overlay reset
     if (this.fxFlash) {
       this.fxFlash.clear().rect(0, 0, W, H).fill({ color: 0xFFFFFF, alpha: 0 });
       this.fxFlash.visible = false;
     }
 
+    // Info modal layout
     this.infoModal.layout(W, H);
 
-    // ⬇️ NEW/UPDATED: draw mask to match the exact reel area (rounded corners)
-    const RADIUS = 18; // match your panel's inner rounding
+    // Mask that clips reels + FX to the exact inner panel region
+    const RADIUS = 18;
     this.gridMask.clear()
       .roundRect(this.grid.x, this.grid.y, gridW * k, gridH * k, RADIUS)
-      .fill(0xffffff); // color doesn't matter for masks
+      .fill(0xffffff);
   }
 
-  private toggleSpin() {
-    if (this.reels.isRolling) {
-      this.disarmAutoStop();
-      this.reels.stopImmediate();
-      this.awaitAndSettle();
-      return;
-    }
-    this.startSpin();
-  }
-
+  /** Start a base spin and reflect UI state on the Spin button. */
   private startSpin() {
     const s = getState();
     if (s.isSpinning || s.balance < s.stake) return;
@@ -210,6 +246,9 @@ export class gameScene extends Container {
     setSpinning(true);
     setWin(0);
     debitStake();
+
+    // Switch button to STOP mode while spinning
+    this.hud.spin.setMode('stop');
 
     this.reels.start();
 
@@ -221,9 +260,12 @@ export class gameScene extends Container {
     this.armAutoStop();
   }
 
+  /** Auto stop after timeout: go disabled during stopping, then settle. */
   private armAutoStop() {
     this.disarmAutoStop();
     this.autoStopTimer = window.setTimeout(() => {
+      // User didn't press STOP: trigger staggered stop and disable button during stop
+      this.hud.spin.setMode('disabled');
       this.reels.requestStaggerStop(false);
       this.awaitAndSettle();
     }, AUTO_STOP_MS);
@@ -290,14 +332,46 @@ export class gameScene extends Container {
     this.fxRafShake = requestAnimationFrame(tick);
   }
 
-  /** Center of the window converted to this scene's local space */
-  private getWindowCenterLocal(): Point {
-    const W = App.pixi.renderer.screen.width;
-    const H = App.pixi.renderer.screen.height;
-    return this.toLocal(new Point(W / 2, H / 2));
-    // Alternative if your scene is not at (0,0): return this.toLocal({x: W/2, y:H/2} as any);
+  // helpers (grid space)
+  private idxToXY(idx: number): { x: number; y: number } {
+    const r = Math.floor(idx / GRID_COLS);
+    const c = idx % GRID_COLS;
+    return { x: c * CELL + CELL / 2, y: r * CELL + CELL / 2 };
+  }
+  private makeCellSprite(texKey: string, size = CELL * 0.9): Sprite {
+    const spr = Sprite.from(texKey);
+    spr.anchor.set(0.5);
+    const w = Math.max(1, spr.texture.width);
+    const h = Math.max(1, spr.texture.height);
+    const scale = Math.min(size / w, size / h);
+    spr.scale.set(scale);
+    return spr;
+  }
+  private async playLocalPigSquash(idx: number, texKey: string) {
+    // overlay a temp sprite and squash it in-place
+    const { x, y } = this.idxToXY(idx);
+    const spr = this.makeCellSprite(texKey);
+    spr.position.set(x, y);
+    spr.zIndex = 1000;
+    this.grid.addChild(spr);
+
+    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+    const t0 = performance.now();
+    await new Promise<void>((resolve) => {
+      const step = () => {
+        const k = Math.min(1, (performance.now() - t0) / 180);
+        const e = easeOutCubic(k);
+        spr.scale.y = spr.scale.y * (1 - 0.5 * e); // squash down
+        spr.alpha = 1 - 0.6 * e;
+        if (k < 1) requestAnimationFrame(step);
+        else resolve();
+      };
+      requestAnimationFrame(step);
+    });
+    spr.destroy();
   }
 
+  /** Wait for reels stop, resolve outcomes, then return UI to SPIN. */
   private async awaitAndSettle() {
     try {
       await this.reels.onceAllStopped();
@@ -306,16 +380,171 @@ export class gameScene extends Container {
 
       const visible = this.reels.getVisibleGrid();
 
-      // Feature trigger
-      const pigs = findPigCells(visible);
-      if (pigs.length >= PIG_TRIGGER_COUNT) {
+      // ────────────────────────────────────────────────────────────────────────
+      // DEV: force Lock&Win (hotkey 'L' or ?forceLW)
+      if (DEV_FORCE_LW || this._forceLWOnce) {
+        this._forceLWOnce = false;
+
+        // Try to place a pig in each column visibly (if Reels supports it)
+        const setCellKey = (this.reels as any).setCellKey as ((i:number,k:string)=>void) | undefined;
+        const primaryPigKey = 'pig'; // adjust if your base pig texture key is different
+        const idxOf = (r: number, c: number) => r * GRID_COLS + c;
+
+        // Put pigs on top row of every column
+        for (let c = 0; c < GRID_COLS; c++) {
+          const top = idxOf(0, c);
+          if (setCellKey) setCellKey(top, primaryPigKey);
+          visible[top] = primaryPigKey; // keep controller view consistent
+        }
+
+        // INTRO modal (red & green button UI stays as-is)
+        {
+          const intro = new FeatureIntroModal();
+          this.addChild(intro);
+          const W = App.pixi.renderer.screen.width;
+          const H = App.pixi.renderer.screen.height;
+          intro.layout(0, 0, W, H);
+          await intro.present({
+            spins: 3,
+            onShownSfx: 'bonus_enter',
+            onClickSfx: 'ui_click',
+          });
+          intro.dispose();
+        }
+
+        // Run Lock&Win (PigFeatureController)
         this.reels.clearHighlights();
 
         const feature = new PigFeatureController(this.reels);
+        feature.zIndex = 900;                 // above reels
+        feature.sortableChildren = true;
         this.grid.addChild(feature);
 
         const { total, highlight } = await feature.run(visible, getState().stake);
         feature.destroy();
+
+        // COMPLETED modal
+        {
+          const complete = new FeatureCompleteModal();
+          this.addChild(complete);
+          const W = App.pixi.renderer.screen.width;
+          const H = App.pixi.renderer.screen.height;
+          complete.layout(0, 0, W, H);
+          await complete.present(total, { onShownSfx: 'bonus_finish', onClickSfx: 'ui_click' });
+          complete.dispose();
+        }
+
+        setWin(total);
+        setBalance(getState().balance + total);
+
+        const ratioF = total / Math.max(1, getState().stake);
+        this.playWinCue(total, getState().stake);
+        this.sceneFlash(0xFFD479, ratioF >= 10 ? 0.7 : 0.5, 260);
+        this.screenShake(ratioF >= 10 ? 8 : 4, ratioF >= 10 ? 320 : 220);
+
+        if (highlight.length) {
+          this.reels.highlightCells(highlight);
+          window.setTimeout(() => this.reels.clearHighlights(), HIGHLIGHT_MS);
+        } else {
+          this.reels.clearHighlights();
+        }
+
+        await this.winToast.show(total, getState().stake);
+        return; // skip base game after forcing L&W
+      }
+      // ────────────────────────────────────────────────────────────────────────
+      // DEV: force a single hammer smash in base game (not during Lock&Win)
+      if (this._forceHammerOnce) {
+        this._forceHammerOnce = false;
+
+        const setCellKey = (this.reels as any).setCellKey as ((i:number,k:string)=>void) | undefined;
+
+        // 1) Pick or create a pig target
+        let target = visible.findIndex(k => k && k.startsWith('pig'));
+        if (target < 0) {
+          // no pig on board: create one at bottom-center for a clean test
+          const r = GRID_ROWS - 1;
+          const c = Math.floor(GRID_COLS / 2);
+          target = r * GRID_COLS + c;
+          if (setCellKey) setCellKey(target, 'pig');
+          visible[target] = 'pig';
+        }
+
+        const pigTexKey = visible[target];
+
+        // 2) Try to use a real hammer neighbor; if none, use a free flight
+        const hammerCells = findHammerCells(visible);
+        const neighbor = neighborsOf(target).find(i => hammerCells.includes(i));
+        const useFreeFlight = neighbor == null;
+
+        // If we have a clean neighbor hammer, hide its static symbol
+        if (!useFreeFlight) this.reels.setCellAlpha(neighbor!, 0);
+
+        try {
+          await animateHammerAction({
+            fxLayer: this.grid,
+            centerOnWindow: useFreeFlight,
+            viewportForCenter: this.grid,
+            fromIdx: neighbor ?? 0,
+            toIdx: target,
+            smashed: { at: target, amount: 100 },
+            showAmount: true,
+            speed: 0.8,
+            onImpact: async () => {
+              this.reels.setCellAlpha(target, 0);
+              if (pigTexKey) {
+                await this.playLocalPigSquash(target, pigTexKey);
+              }
+            },
+          });
+
+          await pinkBurstAtCell(this.grid, target, { count: 18, lifeMs: 380 });
+          await showValueTokenAtCell(this.grid, target, 100, 650);
+        } finally {
+          if (!useFreeFlight) this.reels.setCellAlpha(neighbor!, 1);
+          this.reels.setCellAlpha(target, 1);
+        }
+      }
+      // ─────────────────────────────────────────────
+
+      // Feature trigger (original pig feature if enough pigs total)
+      const pigs = findPigCells(visible);
+      if (pigs.length >= PIG_TRIGGER_COUNT) {
+        this.reels.clearHighlights();
+
+        // INTRO modal
+        {
+          const intro = new FeatureIntroModal();
+          this.addChild(intro);
+          const W = App.pixi.renderer.screen.width;
+          const H = App.pixi.renderer.screen.height;
+          intro.layout(0, 0, W, H);
+          await intro.present({
+            spins: 3,
+            onShownSfx: 'bonus_enter',
+            onClickSfx: 'ui_click',
+          });
+          intro.dispose();
+        }
+
+        const feature = new PigFeatureController(this.reels);
+        feature.zIndex = 900;                 // above reels
+        feature.sortableChildren = true;
+        this.grid.addChild(feature);
+
+        const { total, highlight } = await feature.run(visible, getState().stake);
+        feature.destroy();
+
+        // COMPLETED modal
+        {
+          const complete = new FeatureCompleteModal();
+          this.addChild(complete);
+          const W = App.pixi.renderer.screen.width;
+          const H = App.pixi.renderer.screen.height;
+          complete.layout(0, 0, W, H);
+          await complete.present(total, { onShownSfx: 'bonus_finish', onClickSfx: 'ui_click' });
+          complete.dispose();
+        }
 
         setWin(total);
         setBalance(getState().balance + total);
@@ -336,7 +565,7 @@ export class gameScene extends Container {
         return;
       }
 
-      // Base game
+      // Base game (ways + optional hammer-in-base)
       const stake = getState().stake;
       const { wins, total } = evaluateWays(visible, stake);
       let grand = total;
@@ -350,28 +579,41 @@ export class gameScene extends Container {
         grand += baseHammer.total;
         baseHammer.indices.forEach(i => hlSet.add(i));
 
-        // optional FX per smashed pig
         const hammerCells = findHammerCells(visible);
+
         for (const s of baseHammer.smashed) {
-          const anyAdjHammer = neighborsOf(s.at).find(i => hammerCells.includes(i));
+          const fromIdx = neighborsOf(s.at).find(i => hammerCells.includes(i));
+          if (fromIdx == null) continue;
 
-          // ⬇️ Skip pre-hit temp sprites when pig is on bottom row (prevents HUD overlap)
-          const row = Math.floor(s.at / GRID_COLS);
-          const isBottom = row === GRID_ROWS - 1;
-          if (!isBottom) {
-            await shakeZoomHammerAndPig({
-              fxLayer: this,
-              hammerIdx: anyAdjHammer,
-              pigIdx: s.at,
-              ms: 520,          // short & subtle
-              zoomOut: 0.9995,  // tiny zoom-out feel
+          // Only hide the hammer source before the flight; keep pig visible until impact
+          this.reels.setCellAlpha(fromIdx, 0);
+          const pigTexKey = visible[s.at]; // remember texture to squash
+
+          try {
+            await animateHammerAction({
+              fxLayer: this.grid,
+              fromIdx,
+              toIdx: s.at,
+              smashed: { at: s.at, amount: s.amount },
+              showAmount: true,
+              speed: 0.7,
+              onImpact: async () => {
+                // hide base pig sprite exactly at impact, then squash overlay
+                this.reels.setCellAlpha(s.at, 0);
+                if (pigTexKey) {
+                  await this.playLocalPigSquash(s.at, pigTexKey);
+                }
+              },
             });
-          }
 
-          // Centered celebration (ignore the cell position)
-          const cen = this.getWindowCenterLocal();
-          await impactRingAt(this, cen.x, cen.y);
-          await popAmountAt(this, cen.x, cen.y, s.amount);
+            // Post-hit FX; helpers auto-destroy their own graphics
+            await pinkBurstAtCell(this.grid, s.at, { count: 18, lifeMs: 380 });
+            await showValueTokenAtCell(this.grid, s.at, s.amount, 650);
+          } finally {
+            // ALWAYS restore board state so everything is back to normal
+            this.reels.setCellAlpha(fromIdx, 1);
+            this.reels.setCellAlpha(s.at, 1); // keep if pig should remain; remove if a smash should consume it
+          }
         }
       }
 
@@ -398,6 +640,8 @@ export class gameScene extends Container {
       console.error('settle error:', e);
     } finally {
       setSpinning(false);
+      // Return button to SPIN after everything finishes
+      this.hud.spin.setMode('spin');
     }
   }
 
