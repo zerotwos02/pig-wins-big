@@ -3,11 +3,8 @@
     "target": "ES2020",
     "module": "ESNext",
     "lib": ["ES2020", "DOM"],
-    "moduleResolution": "bundler",
+    "moduleResolution": "Bundler",
     "downlevelIteration": true,
-
-    "ignoreDeprecations": "6.0",
-
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
@@ -20,8 +17,12 @@
       "@styles/*": ["src/styles/*"],
       "@utils/*": ["src/utils/*"]
     },
-
-    "types": ["vite/client"]
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "ignoreDeprecations": "6.0",
+    "noEmit": true
   },
-  "include": ["src"]
+  "include": ["src", "src/vite-env.d.ts"]
 }

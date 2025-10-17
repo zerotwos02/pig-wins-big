@@ -1,19 +1,23 @@
-// src/net/mock-server.ts (top of file)
+// src/net/mock-server.ts
 import {
   Symbol as PbSymbol,
   type SpinResponse,
   SpinResponseSchema,
   GridSchema,
   BaseWinSchema,
+  type BaseWin,
   PigFeatureSchema,
-} from "../gen/game_pb";              // ← relative path
+} from "../gen/game_pb";
 import {
   GRID_COLS as COLS,
   GRID_ROWS as ROWS,
   PIG_TRIGGER_COUNT,
-} from "../game/config";                          // ← relative path
-
+} from "../game/config";
 import { create } from "@bufbuild/protobuf";
+
+// ───────────────────────────────────────────────────────────────
+// Configuration & utility helpers
+// ───────────────────────────────────────────────────────────────
 
 // line-pay symbols (adjust to your set)
 const LINE_PAY_SYMS = [
@@ -23,7 +27,7 @@ const LINE_PAY_SYMS = [
   PbSymbol.SYM_COIN,
 ];
 
-// random pool and simple rates
+// random pool of symbols
 const POOL = [
   PbSymbol.SYM_DIAMOND,
   PbSymbol.SYM_GOLD_BARS,
@@ -43,14 +47,14 @@ const PAY: Record<number, number[]> = {
   [PbSymbol.SYM_COIN]:      [0, 0, 0.2, 0.4, 0.8, 1.6],
 };
 
-// shadow pig values for hammer instant collect (× stake)
+// pig symbol values (× stake)
 const PINK_VALUES = [0.5, 1, 2, 3, 5];
 const GOLD_VALUES = [5, 10, 20, 50, 100];
 
+// helpers
 const idx = (r: number, c: number) => r * COLS + c;
 const rc = (i: number) => ({ r: (i / COLS) | 0, c: i % COLS });
-const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
-function rand<T>(a: T[]) { return a[(Math.random() * a.length) | 0]; }
+function rand<T>(a: T[]): T { return a[(Math.random() * a.length) | 0]; }
 
 // neighbors: up/down/left/right with row-safety for left/right
 function neighbors4(i: number) {
@@ -63,8 +67,12 @@ function neighbors4(i: number) {
   return n;
 }
 
+// ───────────────────────────────────────────────────────────────
+// Core mock win calculations
+// ───────────────────────────────────────────────────────────────
+
 function powerPays(cells: number[], stake: number) {
-  const baseWins: ReturnType<typeof create<typeof BaseWinSchema>>[] = [];
+  const baseWins: BaseWin[] = [];
   const winIndexSet = new Set<number>();
 
   for (const sym of LINE_PAY_SYMS) {
@@ -73,30 +81,39 @@ function powerPays(cells: number[], stake: number) {
     const perReelIdx: number[][] = [];
 
     for (let c = 0; c < COLS; c++) {
-      let count = 0; const inds: number[] = [];
+      let count = 0;
+      const inds: number[] = [];
       for (let r = 0; r < ROWS; r++) {
         const i = idx(r, c);
-        if (cells[i] === sym) { count++; inds.push(i); }
+        if (cells[i] === sym) {
+          count++;
+          inds.push(i);
+        }
       }
-      if (c === 0 && count === 0) break;      // must start on reel 1
-      if (count > 0) { reels++; counts.push(count); perReelIdx.push(inds); }
-      else break;
+      if (c === 0 && count === 0) break; // must start on reel 1
+      if (count > 0) {
+        reels++;
+        counts.push(count);
+        perReelIdx.push(inds);
+      } else break;
     }
 
     if (reels >= 3) {
       const ways = counts.reduce((a, b) => a * b, 1);
-      const perWay = (PAY[sym] && PAY[sym][reels]) || 0;
+      const perWay = PAY[sym]?.[reels] ?? 0;
       const amount = ways * perWay * stake;
       if (amount > 0) {
         const allIdx = perReelIdx.flat();
         allIdx.forEach(i => winIndexSet.add(i));
-        baseWins.push(create(BaseWinSchema, {
-          symbol: sym,
-          reels,
-          ways,
-          amount,
-          indices: allIdx,
-        }));
+        baseWins.push(
+          create(BaseWinSchema, {
+            symbol: sym,
+            reels,
+            ways,
+            amount,
+            indices: allIdx,
+          })
+        );
       }
     }
   }
@@ -112,7 +129,7 @@ function hammerInstantCollect(cells: number[], stake: number) {
     for (const j of neighbors4(i)) {
       const s = cells[j];
       if (s === PbSymbol.SYM_PIG || s === PbSymbol.SYM_PIG_GOLD) {
-        const mult = (s === PbSymbol.SYM_PIG) ? rand(PINK_VALUES) : rand(GOLD_VALUES);
+        const mult = s === PbSymbol.SYM_PIG ? rand(PINK_VALUES) : rand(GOLD_VALUES);
         sum += mult * stake;
       }
     }
@@ -121,25 +138,33 @@ function hammerInstantCollect(cells: number[], stake: number) {
 }
 
 function countPigs(cells: number[]) {
-  let n = 0; const idxs: number[] = [];
+  let n = 0;
+  const idxs: number[] = [];
   for (let i = 0; i < cells.length; i++) {
     const s = cells[i];
-    if (s === PbSymbol.SYM_PIG || s === PbSymbol.SYM_PIG_GOLD) { n++; idxs.push(i); }
+    if (s === PbSymbol.SYM_PIG || s === PbSymbol.SYM_PIG_GOLD) {
+      n++;
+      idxs.push(i);
+    }
   }
   return { n, idxs };
 }
 
-export async function mockSpin(stake: number): Promise<SpinResponse> {
-  // 1) random 5×5
-  const cells = Array.from({ length: ROWS * COLS }, () => POOL[(Math.random() * POOL.length) | 0]);
+// ───────────────────────────────────────────────────────────────
+// Main exported mock spin
+// ───────────────────────────────────────────────────────────────
 
-  // 2) base wins
+export async function mockSpin(stake: number): Promise<SpinResponse> {
+  // 1) random 5×5 grid
+  const cells = Array.from({ length: ROWS * COLS }, () => rand(POOL));
+
+  // 2) base line wins
   const { baseWins, baseWinTotal, winIndices } = powerPays(cells, stake);
 
-  // 3) hammer insta-collect
+  // 3) hammer instant collection
   const hammerPay = hammerInstantCollect(cells, stake);
 
-  // 4) feature trigger (placeholder; we’ll script events later)
+  // 4) feature trigger (basic placeholder)
   const { n: pigCount, idxs: pigIndices } = countPigs(cells);
   const feature =
     pigCount >= PIG_TRIGGER_COUNT
@@ -153,13 +178,14 @@ export async function mockSpin(stake: number): Promise<SpinResponse> {
         })
       : undefined;
 
-  // 5) assemble
+  // 5) assemble protobuf response
+  const totalWin = baseWinTotal + hammerPay + (feature?.featureWin ?? 0);
   return create(SpinResponseSchema, {
     grid: create(GridSchema, { cells }),
-    baseWinTotal: baseWinTotal + hammerPay,
     baseWins,
+    baseWinTotal: baseWinTotal + hammerPay,
     winIndices,
     feature,
-    totalWin: baseWinTotal + hammerPay + (feature?.featureWin ?? 0),
+    totalWin,
   });
 }
