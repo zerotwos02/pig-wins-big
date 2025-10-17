@@ -1,8 +1,8 @@
 // src/styles/theme.ts
 export const COLOR = {
-    gold1: 0xFFF3B0,
-    gold2: 0xFFD479,
-    gold3: 0xB68019,
+    gold1: 0xFFF3B0, // highlight
+    gold2: 0xFFD479, // mid
+    gold3: 0xB68019, // shadow
     purple: 0x4B007F,
     purpleDark: 0x2C004A,
     green: 0x09B200,

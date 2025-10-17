@@ -8,7 +8,7 @@ export class App {
             // crisp rendering:
             resolution: Math.min(2, window.devicePixelRatio || 1),
             antialias: false,
-            roundPixels: true,
+            roundPixels: true, // ✅ set here (v8)
             powerPreference: 'high-performance',
         });
         document.getElementById('app').appendChild(app.canvas);

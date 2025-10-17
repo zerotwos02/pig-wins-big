@@ -16,8 +16,8 @@ export class HUD extends Container {
         this.spin.zIndex = 2;
         // make the title smaller by default (tweak if you want)
         this.title.setTitleOptions({
-            heightRatio: 0.90,
-            widthRatio: 0.90,
+            heightRatio: 0.90, // fraction of reels height
+            widthRatio: 0.90, // fraction of left space
             //scaleBias: 0.95,      // extra shrink
             yOffsetRatio: 0.07, // 10% down from reels top
         });

@@ -89,7 +89,7 @@ export class ReelsMotion {
             from: this.cfg.bouncePx,
             to: 0,
             duration: this.cfg.bounceMs,
-            ease: easeOutBack(1.6),
+            ease: easeOutBack(1.6), // a touch softer than 1.4
             onUpdate: (v) => this.setNudge(col, v),
         });
     }
@@ -144,7 +144,7 @@ export class ReelsMotion {
                             from: -upPx,
                             to: +overshoot,
                             duration: overMs,
-                            ease: easeOutBack(1.1),
+                            ease: easeOutBack(1.1), // small overshoot feel, not snappy
                             onUpdate: (v) => this.setStartNudge(c, v),
                             onComplete: () => {
                                 // phase C: +overshoot → 0 (ease in/out settle)

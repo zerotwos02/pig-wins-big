@@ -11,8 +11,8 @@ export const PAYTABLE = {
     coin: [0, 0, 1, 2, 5, 12],
     dollar: [0, 0, 1, 3, 6, 15],
     money_bag: [0, 0, 2, 4, 8, 20],
-    pig: [0, 0, 0, 0, 0, 0],
-    pig_gold: [0, 0, 0, 0, 0, 0],
-    wild_feather: [0, 0, 0, 0, 0, 0],
+    pig: [0, 0, 0, 0, 0, 0], // handled by feature logic
+    pig_gold: [0, 0, 0, 0, 0, 0], // handled by feature logic
+    wild_feather: [0, 0, 0, 0, 0, 0], // wild; we’ll fold into matches
     hammer: [0, 0, 0, 0, 0, 0], // special; base smash handled separately
 };

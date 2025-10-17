@@ -54,7 +54,7 @@ export class Footer extends Container {
         const t = new Text({
             text: label,
             style: {
-                fontFamily: 'Cinzel, Trajan Pro, Georgia, serif',
+                fontFamily: 'Cinzel, Trajan Pro, Georgia, serif', // casino serif vibe
                 fontSize: 22,
                 fontWeight: '900',
                 fill: 0xFFFFFF,
@@ -91,7 +91,7 @@ export class Footer extends Container {
                 fontWeight: '900',
                 fill: ['#FFF3B0', '#FFD479', '#B68019'],
                 fillGradientStops: [0, 0.55, 1],
-                fillGradientType: 0,
+                fillGradientType: 0, // vertical gradient
                 stroke: { color: GOLD_3, width: 3, join: 'round' },
                 dropShadow: true,
                 dropShadowColor: 0x000000,

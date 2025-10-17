@@ -4,11 +4,11 @@ import { Symbol as PbSymbol, } from '../gen/game_pb';
 const TEX = {
     [PbSymbol.SYM_PIG]: 'pig',
     [PbSymbol.SYM_PIG_GOLD]: 'pig_gold',
-    [PbSymbol.SYM_WILD]: 'wild_feather',
+    [PbSymbol.SYM_WILD]: 'wild_feather', // ← renamed
     [PbSymbol.SYM_HAMMER]: 'hammer',
     [PbSymbol.SYM_DIAMOND]: 'diamond',
     [PbSymbol.SYM_GOLD_BARS]: 'gold_bars',
-    [PbSymbol.SYM_CASH]: 'cash_stack',
+    [PbSymbol.SYM_CASH]: 'cash_stack', // ← your sprite name
     [PbSymbol.SYM_COIN]: 'coin',
     // (Optional) your proto doesn't have DOLLAR/MONEY_BAG yet; they can still be used as filler
 };
