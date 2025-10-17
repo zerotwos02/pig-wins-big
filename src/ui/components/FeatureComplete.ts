@@ -1,14 +1,15 @@
 // src/ui/components/FeatureComplete.ts
 import { Container, Graphics, Text } from 'pixi.js';
 import { SFX } from '@/audio/sound-manager';
+import { sound as pixiSound } from '@pixi/sound';
 
 type PresentOpts = {
-  onShownSfx?: string;   // e.g., 'bonus_finish'
-  onClickSfx?: string;   // e.g., 'ui_click'
-  title1?: string;       // default: 'LOCK & WIN'
-  title2?: string;       // default: 'COMPLETE'
-  sub?: string;          // default: 'YOU WIN'
-  currencyPrefix?: string; // default: 'FUN'
+  onShownSfx?: string;      // default: 'onShown'
+  onClickSfx?: string;      // default: 'ui_click'
+  title1?: string;          // default: 'LOCK & WIN'
+  title2?: string;          // default: 'COMPLETE'
+  sub?: string;             // default: 'YOU WIN'
+  currencyPrefix?: string;  // default: 'FUN'
 };
 
 export class FeatureCompleteModal extends Container {
@@ -27,7 +28,7 @@ export class FeatureCompleteModal extends Container {
     super();
     this.sortableChildren = true;
 
-    // Titles styled to match FeatureIntro (same family, heavy stroke)
+    // Titles
     this.title1 = new Text({
       text: 'LOCK & WIN',
       style: {
@@ -82,7 +83,7 @@ export class FeatureCompleteModal extends Container {
     });
     this.amount.anchor.set(0.5);
 
-    // OK button (same vibe as intro button with hover/press)
+    // OK button
     this.okTxt = new Text({
       text: 'OK',
       style: {
@@ -113,11 +114,10 @@ export class FeatureCompleteModal extends Container {
   }
 
   layout(x: number, y: number, w: number, h: number) {
-    // Dim background
+    // Background & frame
     this.dim.clear().rect(0, 0, w, h).fill({ color: 0x000000, alpha: 0.65 });
     this.dim.position.set(0, 0);
 
-    // Panel frame (transparent center, golden stroke)
     this.panel.clear()
       .roundRect(x + w * 0.1, y + h * 0.18, w * 0.8, h * 0.56, 20)
       .stroke({ width: 6, color: 0xFFCC55, alpha: 0.25 });
@@ -130,7 +130,6 @@ export class FeatureCompleteModal extends Container {
     this.sub.position.set(cx, cy + 22);
     this.amount.position.set(cx, cy + 90);
 
-    // OK button
     const bw = 220, bh = 78;
     this.okBtn.clear()
       .roundRect(0, 0, bw, bh, 20)
@@ -142,10 +141,11 @@ export class FeatureCompleteModal extends Container {
     this.okTxt.position.set(this.okBtn.x, this.okBtn.y);
   }
 
-  /** Show the modal, set amount, wait for OK click. */
+  /** Pop: play onShown. OK: click + onShown, stop bg_lockandwin, start bg_music (no fades). */
   async present(totalFun: number, opts: PresentOpts = {}): Promise<void> {
     const {
-      onShownSfx, onClickSfx,
+      onShownSfx = 'onShown',
+      onClickSfx = 'ui_click',
       title1 = 'LOCK & WIN',
       title2 = 'COMPLETE',
       sub = 'YOU WIN',
@@ -161,52 +161,50 @@ export class FeatureCompleteModal extends Container {
     })}`;
     this.amount.text = formatted;
 
-    // pop-in (same feel as intro)
+    // Show immediately (keep simple)
     this.visible = true;
-    this.alpha = 0;
-    this.scale.set(0.97);
-    const t0 = performance.now();
-    await new Promise<void>((res) => {
-      const step = () => {
-        const k = Math.min(1, (performance.now() - t0) / 220);
-        const ease = 1 - Math.pow(1 - k, 3);
-        this.alpha = ease;
-        this.scale.set(0.97 + 0.03 * ease);
-        if (k < 1) requestAnimationFrame(step); else res();
-      };
-      requestAnimationFrame(step);
-    });
+    this.alpha = 1;
+    this.scale.set(1);
 
-    try { if (onShownSfx) { await SFX.ready; SFX.play(onShownSfx as any); } } catch {}
+    // Stinger on pop
+    try { await SFX.ready; if (onShownSfx) SFX.play('onShown' as any); } catch {}
 
-    // Wait for click
+    // Wait for OK
     await new Promise<void>((resolve) => {
       const click = async () => {
-        try { if (onClickSfx) { await SFX.ready; SFX.play(onClickSfx as any); } } catch {}
-        // tiny press-out
-        const t1 = performance.now();
-        const startScale = this.scale.x;
-        const endScale = 0.98;
-        const dur = 120;
-        const tick = () => {
-          const k = Math.min(1, (performance.now() - t1) / dur);
-          this.scale.set(startScale + (endScale - startScale) * k);
-          if (k < 1) requestAnimationFrame(tick); else resolve();
-        };
-        requestAnimationFrame(tick);
+        try {
+          await SFX.ready;
+
+          // Click + stinger again
+          if (onClickSfx) SFX.play(onClickSfx as any);
+          if (onShownSfx) SFX.play(onShownSfx as any);
+
+          // Stop any ambient loop if used elsewhere
+          try { SFX.stop('info_loop' as any); } catch {}
+
+          // 1) STOP feature bg immediately
+          try { SFX.stop('bg_lockandwin' as any); } catch {}
+
+          // 2) Make sure audio context & mute are not blocking playback
+          try { pixiSound.resumeAll(); } catch {}
+          try { pixiSound.unmuteAll(); } catch {}
+
+          // 3) Ensure alias is audible at the sound level
+          try {
+            const snd: any = (pixiSound as any).find?.('bg_music') ?? (pixiSound as any)._sounds?.['bg_music'];
+            if (snd) snd.volume = 0.25;
+          } catch {}
+
+          // 4) PLAY bg_music as a fresh single instance (loop is defined at add-time)
+          try { (pixiSound as any).play?.('bg_music', { singleInstance: true, volume: 0.25, loop: true }); } catch {}
+
+          // Optional: also go through SFX surface if you prefer
+          // try { (SFX as any).play('bg_music', { singleInstance: true, volume: 0.25 }); } catch {}
+        } finally {
+          resolve();
+        }
       };
       this.okBtn.once('pointertap', click);
-    });
-
-    // fade out
-    const t2 = performance.now();
-    await new Promise<void>((res) => {
-      const step = () => {
-        const k = Math.min(1, (performance.now() - t2) / 160);
-        this.alpha = 1 - k;
-        if (k < 1) requestAnimationFrame(step); else res();
-      };
-      requestAnimationFrame(step);
     });
 
     this.visible = false;

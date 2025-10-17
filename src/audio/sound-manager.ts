@@ -12,11 +12,12 @@ export type SoundKey =
   | 'lock_on'
   | 'bg_music'
   // --- Hammer feature SFX ---
-  | 'hammer_draw'   // small pull-back cue
-  | 'hammer_whoosh' // fast lunge
-  | 'hammer_hit'    // impact
-  | 'spark_burst'   // pink particle pop / explosion
-  | 'win_tick';     // token pop or count-up tick
+  | 'hammer_draw'
+  | 'hammer_whoosh'
+  | 'hammer_hit'
+  | 'onShown'
+  | 'spark_burst'
+  | 'bg_lockandwin';
 
 class SoundManager {
   private _enabled = true;
@@ -48,7 +49,6 @@ class SoundManager {
   has(alias: SoundKey) {
     const lib: any = sound as any;
     try {
-      // find() exists in pixi-sound v5; _sounds used in older versions
       return Boolean(lib.find?.(alias) || lib._sounds?.[alias]);
     } catch {
       return false;
@@ -99,25 +99,27 @@ class SoundManager {
     });
   }
 
-  // IMPORTANT: use the formats you actually have
+  // IMPORTANT: ensure BGMs are loaded with loop:true here
   async load() {
     await Promise.all([
       this.add('ui_click',    '/assets/audio/sfx/ui_click.mp3'),
       this.add('spin_start',  '/assets/audio/sfx/spin_start.mp3'),
       this.add('info_loop',   '/assets/audio/sfx/info_loop.mp3'),
-      // this.add('reel_tick', '/assets/audio/sfx/reel_tick.mp3'),
       this.add('reel_stop',   '/assets/audio/sfx/reel_stop.mp3'),
       this.add('win_small',   '/assets/audio/sfx/win_small.mp3'),
       this.add('win_big',     '/assets/audio/sfx/win_big.mp3'),
-      // this.add('lock_on',   '/assets/audio/sfx/lock_on.mp3'),
+      this.add('onShown',     '/assets/audio/sfx/onShown.mp3'),
+      
+      // Main BGM (loop)
       this.add('bg_music',    '/assets/audio/music/bg_loop.mp3', { loop: true, volume: 0.25 }),
 
-      // --- Hammer feature SFX (add the files you actually have) ---
-      //this.add('hammer_draw',   '/assets/audio/sfx/hammer_draw.mp3'),
+      // Hammer SFX
       this.add('hammer_whoosh', '/assets/audio/sfx/hammer_whoosh.mp3'),
       this.add('hammer_hit',    '/assets/audio/sfx/hammer_hit.mp3'),
       this.add('spark_burst',   '/assets/audio/sfx/spark_burst.mp3'),
-      //this.add('win_tick',      '/assets/audio/sfx/win_tick.mp3'),
+
+      // 🔥 Feature BGM MUST be looped so it keeps playing
+      this.add('bg_lockandwin', '/assets/audio/music/bg_lockandwin.mp3', { loop: true, volume: 0.28 }),
     ]);
 
     this._readyResolve?.(); // mark ready once all are loaded
@@ -133,19 +135,58 @@ class SoundManager {
 
   toggle() { this.enabled = !this.enabled; }
 
+  // Fade the "sound" (alias-level) volume over time
   fade(key: SoundKey, from: number, to: number, durationMs: number) {
-    const inst: any = (sound as any).find?.(key) ?? (sound as any)._sounds?.[key] ?? null;
-    if (!inst) return;
-    inst.volume = from;
+    const snd: any = (sound as any).find?.(key) ?? (sound as any)._sounds?.[key] ?? null;
+    if (!snd) return;
+    snd.volume = from;
     const start = performance.now();
     const step = (t: number) => {
       const k = Math.min(1, (t - start) / durationMs);
-      inst.volume = from + (to - from) * k;
+      snd.volume = from + (to - from) * k;
       if (k < 1) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
   }
+
+  // --- Convenience: BGM helpers (safe swap with fade) -----------------------
+  async bgmSwap(fromKey: SoundKey, toKey: SoundKey, fadeMs = 180, toVol = 0.28) {
+    try {
+      await this.ready;
+      if (this.has(fromKey)) {
+        this.fade(fromKey, 1, 0, fadeMs);
+        await this._wait(fadeMs + 10);
+        this.stop(fromKey);
+      }
+      if (this.has(toKey)) {
+        this.play(toKey, { volume: 0 });         // start silent
+        this.fade(toKey, 0, toVol, fadeMs);
+      } else {
+        console.warn('[SFX] bgmSwap: target not loaded:', toKey);
+      }
+    } catch {}
+  }
+
+  async bgmStart(key: SoundKey, vol = 0.25) {
+    try {
+      await this.ready;
+      if (!this.has(key)) { console.warn('[SFX] bgmStart: missing', key); return; }
+      this.play(key, { volume: 0 });
+      this.fade(key, 0, vol, 160);
+    } catch {}
+  }
+
+  async bgmStop(key: SoundKey, fadeMs = 160) {
+    try {
+      await this.ready;
+      if (!this.has(key)) return;
+      this.fade(key, 1, 0, fadeMs);
+      await this._wait(fadeMs + 10);
+      this.stop(key);
+    } catch {}
+  }
+
+  private _wait(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 }
 
 export const SFX = new SoundManager();
-

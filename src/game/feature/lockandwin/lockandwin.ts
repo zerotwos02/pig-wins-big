@@ -1,6 +1,8 @@
-// src/game/feature/lockandwin/lockandwin.ts
 import { Container, Sprite } from 'pixi.js';
 import { LWConfig, LWOutcome, LWEvents, CellKey } from './types';
+import { setSpinSpeedScale, setSpinTiming } from '@/game/reels/display-reels';
+import { SFX } from '@/audio/sound-manager';
+import type { SoundKey } from '@/audio/sound-manager';
 
 // Minimal reel “port” you need from your Reels impl:
 export type ReelsPort = {
@@ -11,15 +13,38 @@ export type ReelsPort = {
   respinUnlocked(unlockedIndices: number[]): Promise<void>; // spin just these cells
 };
 
-// NOTE: use `index` (not `idx`) so it matches LWOutcome.locked
 type Lock = { index: number; key: CellKey; amount: number; spr?: Sprite };
+
+// ---------- tiny tween helpers ----------
+const nowMs = () => performance.now();
+function easeOutCubic(t: number) { return 1 - Math.pow(1 - t, 3); }
+function tween(durMs: number, onStep: (k: number) => void): Promise<void> {
+  const t0 = nowMs();
+  return new Promise((resolve) => {
+    const tick = () => {
+      const k = Math.min(1, (nowMs() - t0) / durMs);
+      onStep(k);
+      if (k < 1) requestAnimationFrame(tick);
+      else resolve();
+    };
+    requestAnimationFrame(tick);
+  });
+}
+const waitMs = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// ---------- Sound keys ----------
+const K = (s: string) => s as unknown as SoundKey;
+const BGM_MAIN: SoundKey = K('bg_music');        // loop:true in SFX.load()
+const BGM_LW:   SoundKey = K('bg_lockandwin');   // loop:true in SFX.load()
+const UI_LOOP:  SoundKey = K('info_loop');       // ambient loop under modals
+const STINGER:  SoundKey = K('onShown');         // modal stinger
 
 export class LockAndWinController extends Container {
   private reels: ReelsPort;
   private cfg: LWConfig;
   private ev?: LWEvents;
 
-  private locked = new Map<number, Lock>(); // key = cell index
+  private locked = new Map<number, Lock>();
   private spinsLeft = 0;
   private round = 0;
   private total = 0;
@@ -34,64 +59,215 @@ export class LockAndWinController extends Container {
 
   /** Enter the feature with a starting grid (already showing the trigger). */
   async run(startSpins?: number): Promise<LWOutcome> {
-    const grid = this.reels.getVisibleGrid();
-    this.spinsLeft = startSpins ?? this.cfg.startSpins;
+    // Start feature audio NOW (intro START already clicked)
+    await this.startFeatureAudio();
 
-    // Lock all currently lockable cells at entry
-    grid.forEach((k, i) => {
-      if (this.cfg.isLockable(k) && !this.locked.has(i)) {
-        const amt = this.cfg.valueOf(k);
-        this.locked.set(i, { index: i, key: k, amount: amt });
-        this.total += amt;
-      }
-    });
+    // feature reel behavior
+    const prevSpeed = 1.0;
+    setSpinSpeedScale(2.3);
+    setSpinTiming({ decelWaitMs: 80, staggerMs: 70 });
 
-    // Main loop
-    this.round = 0;
-    while (true) {
-      this.round++;
-      this.ev?.onRound?.(this.round, this.spinsLeft, this.total);
+    try {
+      const grid = this.reels.getVisibleGrid();
+      this.spinsLeft = startSpins ?? this.cfg.startSpins;
 
-      // Compute unlocked indices (those NOT locked)
-      const all = [...this.reels.getVisibleGrid().keys()];
-      const unlocked = all.filter(i => !this.locked.has(i));
+      // Lock all currently lockable cells at entry
+      const seedIndices: number[] = [];
+      grid.forEach((k, i) => {
+        if (this.cfg.isLockable(k) && !this.locked.has(i)) {
+          const amt = this.cfg.valueOf(k);
+          this.locked.set(i, { index: i, key: k, amount: amt });
+          this.total += amt;
+          seedIndices.push(i);
+        }
+      });
 
-      // If full board locked -> finish
-      if (unlocked.length === 0) break;
-
-      // Respin only the unlocked ones
-      await this.reels.respinUnlocked(unlocked);
-
-      const after = this.reels.getVisibleGrid();
-
-      // Detect new locks in this round
-      let gotNew = false;
-      for (const i of unlocked) {
-        const key = after[i];
-        if (this.cfg.isLockable(key)) {
-          const amount = this.cfg.valueOf(key);
-          this.locked.set(i, { index: i, key, amount });
-          this.total += amount;
-          gotNew = true;
-          this.ev?.onLock?.(i, amount);
+      // Spin-in the starting symbols on their own cells
+      if (seedIndices.length) {
+        try {
+          for (const i of seedIndices) {
+            const k = (this.locked.get(i) as Lock).key;
+            this.reels.setCellKey(i, k);
+            this.reels.setCellAlpha(i, 0.0);
+          }
+          await this.reels.respinUnlocked(seedIndices);
+          for (const i of seedIndices) this.reels.setCellAlpha(i, 1.0);
+        } catch {
+          await tween(300, (k) => { for (const i of seedIndices) this.reels.setCellAlpha(i, k); });
         }
       }
 
-      // Reset or decrement spinsLeft
-      this.spinsLeft = gotNew ? this.cfg.startSpins : (this.spinsLeft - 1);
+      // --- Main loop --------------------------------------------------------
+      this.round = 0;
+      while (true) {
+        this.round++;
+        this.ev?.onRound?.(this.round, this.spinsLeft, this.total);
 
-      // Update HUD
-      this.ev?.onRound?.(this.round, this.spinsLeft, this.total);
+        const all = [...this.reels.getVisibleGrid().keys()];
+        const unlocked = all.filter(i => !this.locked.has(i));
+        if (unlocked.length === 0) break;
 
-      if (this.spinsLeft <= 0) break;
+        await this.reels.respinUnlocked(unlocked);
+        const after = this.reels.getVisibleGrid();
+
+        let gotNew = false;
+        for (const i of unlocked) {
+          const key = after[i];
+          if (this.cfg.isLockable(key)) {
+            const amount = this.cfg.valueOf(key);
+            this.locked.set(i, { index: i, key, amount });
+            this.total += amount;
+            gotNew = true;
+            this.ev?.onLock?.(i, amount);
+          }
+        }
+
+        this.spinsLeft = gotNew ? this.cfg.startSpins : (this.spinsLeft - 1);
+        this.ev?.onRound?.(this.round, this.spinsLeft, this.total);
+
+        if (this.spinsLeft <= 0) break;
+      }
+
+      // Finish sequence – pigs fly to the Total & count per pig
+      await this.finishWithFlyAndCount();
+
+      const out: LWOutcome = { total: this.total, locked: Array.from(this.locked.values()) };
+      this.ev?.onFinish?.(out);
+      return out;
+
+    } finally {
+      // Always restore speed
+      setSpinSpeedScale(prevSpeed);
+      setSpinTiming({ decelWaitMs: 160, staggerMs: 110 });
+
+      // Fade out feature BGM and fade in main BGM RIGHT HERE (self-contained).
+      await this.swapBackToMainBGM();
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Finish sequence helpers
+  // --------------------------------------------------------------------------
+  private async finishWithFlyAndCount() {
+    const locks = Array.from(this.locked.values());
+
+    const pigs = locks.filter(L => L.key === ('pig' as CellKey) || L.key === ('pig_gold' as CellKey));
+    const others = locks.filter(L => !pigs.includes(L));
+    const ordered: Lock[] = [...pigs, ...others];
+
+    this.ev?.onTotalReset?.();
+
+    let runningTotal = 0;
+
+    for (const L of ordered) {
+      const from = this.ev?.getCellCenter?.(L.index) ?? this.defaultCellCenter(L.index);
+      const to   = this.ev?.getTotalFieldPos?.()    ?? this.defaultTotalPos();
+
+      const spr = Sprite.from(L.key);
+      spr.anchor.set(0.5);
+      spr.position.copyFrom(from);
+      spr.zIndex = 9999;
+      spr.scale.set(0.9);
+      this.addChild(spr);
+
+      this.ev?.onPigFlyStart?.(L.index, L.amount);
+
+      const dur = 260;
+      const cx = (from.x + to.x) / 2;
+      const cy = Math.min(from.y, to.y) - 80;
+
+      await tween(dur, (kLin) => {
+        const k = easeOutCubic(kLin);
+        const x = (1 - k) * (1 - k) * from.x + 2 * (1 - k) * k * cx + k * k * to.x;
+        const y = (1 - k) * (1 - k) * from.y + 2 * (1 - k) * k * cy + k * k * to.y;
+        spr.position.set(x, y);
+        spr.scale.set(0.9 - 0.3 * k);
+        spr.alpha = 1 - 0.2 * k;
+      });
+
+      spr.destroy();
+      this.ev?.onPigFlyEnd?.(L.index, L.amount);
+
+      const start = runningTotal;
+      const end = runningTotal + L.amount;
+      await tween(500, (k) => this.ev?.onTotalChange?.(Math.round((start + (end - start) * k) * 100) / 100));
+      runningTotal = end;
     }
 
-    // Shape matches LWOutcome.locked { index, key, amount }
-    const out: LWOutcome = {
-      total: this.total,
-      locked: Array.from(this.locked.values()),
-    };
-    this.ev?.onFinish?.(out);
-    return out;
+    this.ev?.onTotalChange?.(runningTotal);
+  }
+
+  private defaultCellCenter(index: number) {
+    const cols = this.cfg.gridCols ?? 5;
+    const rows = this.cfg.gridRows ?? 4;
+    const b = this.reels.view.getBounds();
+    const cw = b.width / cols;
+    const ch = b.height / rows;
+    const c = index % cols;
+    const r = Math.floor(index / cols);
+    return { x: b.x + c * cw + cw / 2, y: b.y + r * ch + ch / 2 };
+  }
+  private defaultTotalPos() {
+    const b = this.reels.view.getBounds();
+    return { x: b.x + b.width - 40, y: b.y - 20 };
+  }
+
+  // --------------------------------------------------------------------------
+  // Audio control (SOUND-level fades; no instance-volume trap)
+  // --------------------------------------------------------------------------
+  private async startFeatureAudio() {
+    try {
+      await SFX.ready;
+
+      // Kill UI loops/stingers so they don't mask the feature track
+      if (SFX.has(UI_LOOP)) SFX.stop(UI_LOOP);
+      if (SFX.has(STINGER)) SFX.stop(STINGER);
+
+      // Fade out + stop main bg
+      if (SFX.has(BGM_MAIN)) {
+        SFX.fade(BGM_MAIN, 1, 0, 140);
+        await waitMs(150);
+        SFX.stop(BGM_MAIN);
+      }
+
+      // Clean start for bg_lockandwin
+      if (SFX.has(BGM_LW)) {
+        SFX.stop(BGM_LW);           // clear stale instance
+        SFX.fade(BGM_LW, 0, 0, 0);  // set SOUND base vol 0
+        SFX.play(BGM_LW);           // play (instance inherits 0)
+        SFX.fade(BGM_LW, 0, 0.28, 200); // fade SOUND up
+      } else {
+        console.warn('[LockAndWin] Missing bg_lockandwin alias (check SFX.load)');
+      }
+    } catch (e) {
+      console.warn('[LockAndWin] startFeatureAudio error:', e);
+    }
+  }
+
+  /** Fade out feature BGM and fade in main BGM immediately. */
+  private async swapBackToMainBGM() {
+    try {
+      await SFX.ready;
+
+      // Fade out + stop feature bg
+      if (SFX.has(BGM_LW)) {
+        SFX.fade(BGM_LW, 1, 0, 160);
+        await waitMs(170);
+        SFX.stop(BGM_LW);
+      }
+
+      // Safety: stop UI loop/stinger if a modal left them running
+      if (SFX.has(UI_LOOP)) SFX.stop(UI_LOOP);
+      if (SFX.has(STINGER)) SFX.stop(STINGER);
+
+      // Fade in main bg (SOUND-level)
+      if (SFX.has(BGM_MAIN)) {
+        SFX.fade(BGM_MAIN, 0, 0, 0); // set SOUND base vol 0
+        SFX.play(BGM_MAIN);          // play (instance inherits 0)
+        SFX.fade(BGM_MAIN, 0, 0.25, 160);
+      }
+    } catch (e) {
+      console.warn('[LockAndWin] swapBackToMainBGM error:', e);
+    }
   }
 }

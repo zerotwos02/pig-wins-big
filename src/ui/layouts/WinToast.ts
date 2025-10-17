@@ -15,6 +15,16 @@ const GOLD_DEEP = 0xffc235;
 const GOLD_RICH = 0xffb000;
 const GOLD_PALE = 0xfff7b2;
 
+type Coin = {
+  g: Graphics;
+  vx: number;    // px/s
+  vy: number;    // px/s
+  rot: number;   // radians
+  vr: number;    // radians/s
+  life: number;  // ms
+  t0: number;    // birth time
+};
+
 export class WinToast extends Container {
   private plate!: Graphics;
   private barBg!: Graphics;
@@ -29,6 +39,12 @@ export class WinToast extends Container {
   // confetti particles (simple vector dots)
   private confettiLayer = new Container();
   private confetti: { g: Graphics; vx: number; vy: number; life: number; t0: number }[] = [];
+
+  // ── NEW: tiny coin fountain ────────────────────────────────────────────────
+  private coinLayer = new Container();
+  private coins: Coin[] = [];
+  private lastEmitAt = 0; // ms wall time
+  private countingPhase = false;
 
   private rAF?: number;
 
@@ -108,6 +124,10 @@ export class WinToast extends Container {
     // confetti layer on top of bar/amount
     this.confettiLayer.position.set(0, 10);
     this.addChild(this.confettiLayer);
+
+    // NEW: tiny coin layer just above amount text
+    this.coinLayer.position.set(0, 10);
+    this.addChild(this.coinLayer);
   }
 
   /** Show a toast; resolves when the animation completes */
@@ -117,6 +137,7 @@ export class WinToast extends Container {
     // cancel any previous animation
     if (this.rAF) cancelAnimationFrame(this.rAF);
     this.clearConfetti();
+    this.clearCoins();
 
     // compute tier by stake multiple
     const ratio = amount / stake;
@@ -179,6 +200,10 @@ export class WinToast extends Container {
 
     this.visible = true;
 
+    // NEW: prep coin emitter
+    this.countingPhase = false;
+    this.lastEmitAt = performance.now();
+
     // animate
     const t0 = performance.now();
     const total = durIn + durCount + hold + durOut;
@@ -200,6 +225,9 @@ export class WinToast extends Container {
         else if (t < durIn + durCount) {
           this.alpha = 1;
           this.scale.set(1);
+
+          // enable coin fountain during counting
+          this.countingPhase = true;
 
           const k = (t - durIn) / durCount;
           const eased = easeOutCubic(k);
@@ -241,6 +269,10 @@ export class WinToast extends Container {
               this.shineMask.position.set(this.shineText.x, this.shineText.y);
             }
           }
+
+          // NEW: emit + update coins while counting
+          this.emitCoins(now, amount);
+          this.updateCoins(1 / 60, 1); // full alpha during count
         }
         // hold final value (with a quick pop on entry)
         else if (t < durIn + durCount + hold) {
@@ -249,6 +281,10 @@ export class WinToast extends Container {
           this.amount.text = `+${formatAmt(amount)}`;
           this.shineText.text = this.amount.text;
           this.barFg.scale.x = Math.max(0.06, prog);
+
+          // stop emitting coins once counting ends, but let them fall
+          this.countingPhase = false;
+          this.updateCoins(1 / 60, 0.9);
 
           // trigger confetti once (for big tiers)
           if (doConfetti && !confettiStarted && t >= confettiStart) {
@@ -265,7 +301,6 @@ export class WinToast extends Container {
             const osc = Math.sin(popK * Math.PI); // up then down
             const s = 1 + 0.06 * osc;
             this.amount.scale.set(s);
-            // keep animating pop while in early hold:
             if (popK < 1) {
               this.rAF = requestAnimationFrame(step);
               return;
@@ -278,20 +313,23 @@ export class WinToast extends Container {
           if (confettiStarted) {
             const tHold = t - (durIn + durCount);
             const fade = 1 - clamp(tHold / confettiHoldMs, 0, 1);
-            this.updateConfetti(1 / 60, fade); // ~frame step; not critical
+            this.updateConfetti(1 / 60, fade);
           }
         }
         // fade out
         else if (t < total) {
           const k = (t - durIn - durCount - hold) / durOut;
-          this.alpha = 1 - k;
-          // let confetti keep drifting but fade with container alpha too
-          if (confettiStarted) this.updateConfetti(1 / 60, (1 - k) * 0.6);
+          const a = 1 - k;
+          this.alpha = a;
+          // let particles keep drifting but fade with container alpha too
+          this.updateCoins(1 / 60, a * 0.7);
+          if (confettiStarted) this.updateConfetti(1 / 60, a * 0.6);
         }
         // done
         else {
           this.visible = false;
           this.clearConfetti();
+          this.clearCoins();
           resolve();
           return;
         }
@@ -344,9 +382,111 @@ export class WinToast extends Container {
     this.confettiLayer.removeChildren();
   }
 
+  // ── NEW: coin fountain helpers ─────────────────────────────────────────────
+  private emitCoins(now: number, finalAmount: number) {
+    if (!this.countingPhase) return;
+
+    // Emission rate: base 40 coins/sec + tiny boost with log(amount)
+    const baseRate = 40;
+    const amtBoost = Math.min(30, Math.log10(Math.max(1, finalAmount)) * 8); // gentle
+    const rate = baseRate + amtBoost; // coins per second
+
+    const minGap = 1000 / rate; // ms between coins
+    if (now - this.lastEmitAt < minGap) return;
+    this.lastEmitAt = now;
+
+    // Spawn 1–2 coins per tick for a lively stream
+    const batch = Math.random() < 0.2 ? 2 : 1;
+    for (let i = 0; i < batch; i++) this.spawnCoin();
+  }
+
+  private spawnCoin() {
+    // Tiny coin size (small!) and farther fall (longer life + stronger gravity later)
+    const rx = 4 + Math.random() * 1.5;  // horizontal radius
+    const ry = rx * (0.65 + Math.random() * 0.15); // vertical radius (elliptical coin)
+
+    const g = new Graphics();
+
+    // Base disc
+    g.ellipse(0, 0, rx, ry).fill({ color: GOLD_DEEP, alpha: 1 });
+    // Edge ring
+    g.ellipse(0, 0, rx, ry).stroke({ width: 1, color: GOLD_RICH, alpha: 1 });
+    // Small highlight arc on top-left
+    g.moveTo(-rx * 0.2, -ry * 0.6)
+      .quadraticCurveTo(-rx * 0.1, -ry * 0.9, rx * 0.2, -ry * 0.6)
+      .stroke({ width: 1, color: GOLD_PALE, alpha: 0.8 });
+
+    // Emit near the amount text center with slight horizontal jitter
+    g.x = (Math.random() - 0.5) * Math.max(18, this.amount.width * 0.12);
+    g.y = -6; // start a bit above the text baseline so it feels like it pops out
+
+    this.coinLayer.addChild(g);
+
+    // Velocity: upward fountain, then fall further
+    const speed = 140 + Math.random() * 120;                 // initial speed
+    const spreadDeg = 40 + Math.random() * 20;               // narrow-ish cone
+    const ang = (-90 + (Math.random() * spreadDeg - spreadDeg / 2)) * (Math.PI / 180);
+    const vx = Math.cos(ang) * speed;
+    const vy = Math.sin(ang) * speed; // mostly upward (negative cos? here sin(-90) = -1, so upward)
+    // Rotation
+    const rot = Math.random() * Math.PI;
+    const vr = (Math.random() * 2 - 1) * 6; // tumble
+
+    // Life longer so they fall further
+    const life = 900 + Math.random() * 900; // 0.9–1.8s
+
+    this.coins.push({
+      g, vx, vy, rot, vr, life, t0: performance.now(),
+    });
+  }
+
+  private updateCoins(dt: number, alphaMul: number) {
+    const now = performance.now();
+    // stronger gravity curve so they rise then really fall
+    const G = 520; // px/s^2 — higher than confetti to fall further
+    const AIR_DRAG = 0.18; // mild drag over time
+
+    for (const c of this.coins) {
+      const age = now - c.t0;
+      const t = clamp(age / c.life, 0, 1);
+
+      // Integrate
+      const drag = 1 - AIR_DRAG * t;
+      c.g.x += c.vx * drag * dt;
+      c.g.y += c.vy * drag * dt + 0.5 * G * dt * dt;
+      c.vy += G * dt;
+
+      c.rot += c.vr * dt;
+      c.g.rotation = c.rot;
+
+      // Fade out as they age
+      c.g.alpha = (1 - t) * alphaMul * 0.95;
+      // Slight depth shrink (simulate distance)
+      const s = 1 - 0.25 * t;
+      c.g.scale.set(s);
+    }
+
+    // Reap expired
+    if (this.coins.length) {
+      const keep: Coin[] = [];
+      for (const c of this.coins) {
+        if (now - c.t0 < c.life) keep.push(c);
+        else c.g.destroy();
+      }
+      this.coins = keep;
+    }
+  }
+
+  private clearCoins() {
+    for (const c of this.coins) c.g.destroy();
+    this.coins.length = 0;
+    this.coinLayer.removeChildren();
+  }
+
   destroy(options?: any) {
     if (this.rAF) cancelAnimationFrame(this.rAF);
     this.clearConfetti();
+    this.clearCoins();
     super.destroy(options);
   }
 }

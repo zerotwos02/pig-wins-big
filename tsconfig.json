@@ -3,8 +3,11 @@
     "target": "ES2020",
     "module": "ESNext",
     "lib": ["ES2020", "DOM"],
-    "moduleResolution": "Bundler",
-    "downlevelIteration": true,          // safe to keep on
+    "moduleResolution": "bundler",
+    "downlevelIteration": true,
+
+    "ignoreDeprecations": "6.0",
+
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
@@ -17,6 +20,7 @@
       "@styles/*": ["src/styles/*"],
       "@utils/*": ["src/utils/*"]
     },
+
     "types": ["vite/client"]
   },
   "include": ["src"]

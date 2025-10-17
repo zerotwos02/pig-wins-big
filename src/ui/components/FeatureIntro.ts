@@ -3,12 +3,12 @@ import { Container, Graphics, Text } from "pixi.js";
 import { SFX } from "@/audio/sound-manager";
 
 type IntroOptions = {
-  spins: number;                 // e.g. 3
-  title?: string;                // default: "CONGRATULATIONS"
-  subtitle?: string;             // default: "LOCK & WIN TRIGGERED"
-  buttonLabel?: string;          // default: "START"
-  onShownSfx?: string;           // optional stinger key
-  onClickSfx?: string;           // optional click key
+  spins: number;
+  title?: string;
+  subtitle?: string;
+  buttonLabel?: string;
+  onShownSfx?: string;   // default: "onShown" (one-shot stinger)
+  onClickSfx?: string;   // default: "ui_click"
 };
 
 export class FeatureIntroModal extends Container {
@@ -68,7 +68,6 @@ export class FeatureIntroModal extends Container {
     });
     this.spinsTxt.anchor.set(0.5);
 
-    // button
     this.btn = new Graphics();
     this.btn.eventMode = "static";
     this.btn.cursor = "pointer";
@@ -98,7 +97,6 @@ export class FeatureIntroModal extends Container {
     this.dim.clear().rect(0, 0, w, h).fill({ color: 0x000000, alpha: 0.65 });
     this.dim.position.set(0, 0);
 
-    // centered panel (transparent, we just need positioning helpers)
     this.panel.clear()
       .roundRect(x + w * 0.1, y + h * 0.18, w * 0.8, h * 0.56, 20)
       .stroke({ width: 6, color: 0xFFCC55, alpha: 0.25 });
@@ -110,7 +108,6 @@ export class FeatureIntroModal extends Container {
     this.subTxt.position.set(cx, cy - 45);
     this.spinsTxt.position.set(cx, cy + 30);
 
-    // button
     const bw = 220, bh = 78;
     this.btn.clear()
       .roundRect(0, 0, bw, bh, 20)
@@ -122,21 +119,23 @@ export class FeatureIntroModal extends Container {
     this.btnTxt.position.set(this.btn.x, this.btn.y);
   }
 
-  /** Show with content and return a promise that resolves after clicking START. */
   async present(opts: IntroOptions): Promise<void> {
     const {
       spins,
       title = "CONGRATULATIONS",
       subtitle = "LOCK & WIN TRIGGERED",
       buttonLabel = "START",
-      onShownSfx,
-      onClickSfx,
+      onShownSfx = "onShown",
+      onClickSfx = "ui_click",
     } = opts;
 
     this.titleTxt.text = title;
     this.subTxt.text = subtitle;
     this.spinsTxt.text = `${spins} SPINS`;
     this.btnTxt.text = buttonLabel;
+
+    // Fade out base bgm under the modal (subtle)
+    try { await SFX.bgmStop('bg_music', 160); } catch {}
 
     // pop-in animation
     this.alpha = 0;
@@ -153,14 +152,32 @@ export class FeatureIntroModal extends Container {
       requestAnimationFrame(step);
     });
 
-    // optional stinger
-    try { if (onShownSfx) { await SFX.ready; SFX.play(onShownSfx as any); } } catch {}
+    // 🔊 Play the onShown stinger when the intro pops up
+    try { await SFX.ready; if (onShownSfx) SFX.play('onShown' as any); } catch {}
 
     // click to resolve
     await new Promise<void>((resolve) => {
       this.resolver = resolve;
       this.btn.once("pointertap", async () => {
-        try { if (onClickSfx) { await SFX.ready; SFX.play(onClickSfx as any); } } catch {}
+        try {
+          await SFX.ready;
+
+          // click sfx
+          if (onClickSfx) SFX.play(onClickSfx as any);
+
+          // (optional) stop an ambient loop if you ever start one elsewhere
+          try { SFX.stop('info_loop' as any); } catch {}
+
+          // ✅ Start and KEEP the Lock&Win BGM after clicking START
+          if (SFX.has('bg_lockandwin' as any)) {
+            try { SFX.stop('bg_lockandwin' as any); } catch {}
+            SFX.fade('bg_lockandwin' as any, 0, 0, 0);
+            SFX.play('bg_lockandwin' as any);              // keep running during the feature
+            SFX.fade('bg_lockandwin' as any, 0, 0.28, 160);
+          }
+          // NOTE: We intentionally do NOT stop 'onShown' here — let the stinger finish naturally.
+        } catch {}
+
         // tiny press-out
         const t1 = performance.now();
         const startScale = this.scale.x;
