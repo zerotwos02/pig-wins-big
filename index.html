@@ -2,17 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/png" href="/assets/images/pig.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vite + TS</title>
-  </head>
-  <body>
+    <title>Pig Wins Big</title>
     <style>
-  html, body, #app { height: 100%; margin: 0; background: #000; }
-  /* Force the canvas to fill the viewport in CSS pixels */
-  canvas { display: block; width: 100vw; height: 100vh; }
-</style>
+      html, body, #app {
+        height: 100%;
+        margin: 0;
+        background-color: #000;
+        overflow: hidden;
+      }
+      /* Force the PixiJS canvas to fill the screen */
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+    </style>
+  </head>
 
+  <body>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

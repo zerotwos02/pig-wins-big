@@ -96,19 +96,19 @@ export class GameTitle extends Container {
     this.bounceActive = true;
     this.bounce.t = 0;
 
-    Ticker.shared.add(this.onTick, this); // ✅ Pixi v7 expects (t: Ticker) callback
+    Ticker.shared.add(this.onTick, this); // Pixi v7 expects (t: Ticker) callback
   }
 
   /** Stop the idle bounce and reset transforms */
   stopBounce() {
     if (!this.bounceActive) return;
     this.bounceActive = false;
-    Ticker.shared.remove(this.onTick, this); // ✅ remove with same signature/context
+    Ticker.shared.remove(this.onTick, this); //  remove with same signature/context
     this.position.set(this.baseX, this.baseY);
     this.scale.set(1, 1);
   }
 
-  // ✅ Pixi v7 signature: receives the Ticker instance
+  // Pixi v7 signature: receives the Ticker instance
   private onTick(t: Ticker) {
     if (!this.bounceActive) return;
 

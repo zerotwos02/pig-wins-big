@@ -43,7 +43,7 @@ export class InfoButton extends Container {
     // press scale
     this.on('pointerdown', () => this.scale.set(0.94));
 
-    // ✅ no custom emit; pointertap is the click
+    //  no custom emit; pointertap is the click
     // (your HUD will attach via onClick(fn) -> 'pointertap')
   }
 

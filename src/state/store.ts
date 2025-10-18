@@ -35,7 +35,7 @@ export function setStake(v: number) {
   events.emit('StakeChanged', { stake: state.stake });
 }
 
-// ✅ looping stepper over the fixed steps
+// looping stepper over the fixed steps
 export function stepStake(dir: 1 | -1) {
   const idx = Math.max(0, BET_STEPS.indexOf(state.stake as Bet));
   const nextIdx = (idx + dir + BET_STEPS.length) % BET_STEPS.length;

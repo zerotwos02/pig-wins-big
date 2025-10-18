@@ -2,7 +2,7 @@ import { App } from '@core/app';
 import { SceneManager } from '@core/scene-manager';
 import { bootScene } from '@scenes/boot-scene';
 import { gameScene } from '@scenes/game-scene';
-import { SFX } from './audio/sound-manager';
+//import { SFX } from './audio/sound-manager';
 
 
 (async () => {
